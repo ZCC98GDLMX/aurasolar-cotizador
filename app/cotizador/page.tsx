@@ -1,9 +1,4 @@
-// app/page.tsx (Next.js App Router) — Solar PV Sizer & ROI for Guadalajara, MX
-// --------------------------------------------------------------------------
-// Drop this file in your Next.js project under /app/page.tsx and deploy on Vercel.
-// Tailwind CSS recommended (https://tailwindcss.com/docs/guides/nextjs).
-// No external UI libs required. Client-only calculator; no backend needed.
-
+// app/cotizador/page.tsx — Solar PV Sizer & ROI for Guadalajara, MX
 "use client";
 
 import React, { useMemo, useState } from "react";
@@ -13,14 +8,18 @@ import React, { useMemo, useState } from "react";
 // ----------------------------
 
 type Tariff = "01" | "DAC" | "GDMT" | "GDMTH";
-
 type MonthlyMap = Record<string, number>;
+type Row = Record<string, string | number>;
 
 const MONTHS = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"] as const;
 
 function fmt(n: number, digits = 2) {
   if (!isFinite(n)) return "N/D";
   return new Intl.NumberFormat("es-MX", { maximumFractionDigits: digits }).format(n);
+}
+
+function round2(n: number) {
+  return Math.round((n + Number.EPSILON) * 100) / 100;
 }
 
 function annualPerKwGeneration(psh: number, pr: number, availability: number, extraLosses: number) {
@@ -30,14 +29,14 @@ function annualPerKwGeneration(psh: number, pr: number, availability: number, ex
 }
 
 function monthlyShape(amplitude = 0.10) {
-  // Cosine seasonal shape peaking ~Jun for Guadalajara
+  // Forma estacional tipo coseno con pico ~Junio para GDL
   const m = Array.from({ length: 12 }, (_, i) => i);
-  const phaseShift = 5; // peak around June (index 5)
+  const phaseShift = 5; // pico ~Jun (índice 5)
   let raw = m.map((i) => 1 + amplitude * Math.cos((2 * Math.PI * (i - phaseShift)) / 12));
   const mean = raw.reduce((a, b) => a + b, 0) / raw.length;
   raw = raw.map((x) => x / mean);
   const sum = raw.reduce((a, b) => a + b, 0);
-  return raw.map((x) => (x * 12) / sum); // sum=12
+  return raw.map((x) => (x * 12) / sum); // suma=12
 }
 
 function sizeSystem(consumption: MonthlyMap, annualKWhPerKW: number, targetCoverage: number, panelWatts: number) {
@@ -62,14 +61,51 @@ function estimateDemandKW(kwhMonth: number, loadFactor = 0.4, days = 30) {
   return kwAvg / Math.max(loadFactor, 1e-6);
 }
 
-// Tariff models (simplified; edit to match bill)
-interface TariffParams01 { mxn_per_kwh: number; fixed_mxn: number; }
+// ----------------------------
+// Tarifas (modelos simplificados)
+// ----------------------------
+
+// Tarifa 01 por bloques (Básico, Intermedio, Excedente) + cargo fijo
+interface TariffParams01 {
+  fixed_mxn: number;              // cargo fijo mensual
+  kwh_basic_limit: number;        // kWh/mes en bloque Básico
+  kwh_intermediate_limit: number; // kWh/mes acumulado hasta Intermedio (Básico + Intermedio)
+  mxn_per_kwh_basic: number;         // $/kWh Básico
+  mxn_per_kwh_intermediate: number;  // $/kWh Intermedio
+  mxn_per_kwh_exceed: number;        // $/kWh Excedente
+}
+
 interface TariffParamsDAC { mxn_per_kwh: number; fixed_mxn: number; }
-interface TariffParamsGDMT { mxn_per_kwh: number; fixed_mxn: number; mxn_per_kw_demand: number; assumed_load_factor: number; }
-interface TariffParamsGDMTH { mxn_per_kwh_punta: number; mxn_per_kwh_intermedia: number; mxn_per_kwh_base: number; fixed_mxn: number; mxn_per_kw_demand: number; split_punta: number; split_intermedia: number; split_base: number; assumed_load_factor: number; }
+
+interface TariffParamsGDMT {
+  mxn_per_kwh: number;
+  fixed_mxn: number;
+  mxn_per_kw_demand: number;
+  assumed_load_factor: number;
+}
+
+interface TariffParamsGDMTH {
+  mxn_per_kwh_punta: number;
+  mxn_per_kwh_intermedia: number;
+  mxn_per_kwh_base: number;
+  fixed_mxn: number;
+  mxn_per_kw_demand: number;
+  split_punta: number; split_intermedia: number; split_base: number;
+  assumed_load_factor: number;
+}
+
+/** Unión de parámetros válidos por tarifa */
+type TariffParams = TariffParams01 | TariffParamsDAC | TariffParamsGDMT | TariffParamsGDMTH;
 
 const DEFAULT_TARIFFS = {
-  "01": { mxn_per_kwh: 2.8, fixed_mxn: 100 } as TariffParams01,
+  "01": {
+    fixed_mxn: 100,
+    kwh_basic_limit: 75,              // ajusta a tu zona (kWh/mes)
+    kwh_intermediate_limit: 140,      // ajusta a tu zona (kWh/mes)
+    mxn_per_kwh_basic: 1.0,
+    mxn_per_kwh_intermediate: 1.8,
+    mxn_per_kwh_exceed: 3.5,
+  } as TariffParams01,
   DAC: { mxn_per_kwh: 6.2, fixed_mxn: 120 } as TariffParamsDAC,
   GDMT: { mxn_per_kwh: 3.3, fixed_mxn: 300, mxn_per_kw_demand: 130, assumed_load_factor: 0.4 } as TariffParamsGDMT,
   GDMTH: {
@@ -85,38 +121,50 @@ const DEFAULT_TARIFFS = {
   } as TariffParamsGDMTH,
 };
 
-function billCFE(tariff: Tariff, kwh: number, params: any) {
+// ----------------------------
+// Cálculo de recibos
+// ----------------------------
+
+function billCFE(tariff: Tariff, kwh: number, params: TariffParams): number {
   switch (tariff) {
-    case "01":
-      return params.mxn_per_kwh * kwh + (params.fixed_mxn || 0);
-    case "DAC":
-      return params.mxn_per_kwh * kwh + (params.fixed_mxn || 0);
+    case "01": {
+      const p = params as TariffParams01;
+      const b1 = Math.max(Math.min(kwh, p.kwh_basic_limit), 0);
+      const b2 = Math.max(Math.min(kwh, p.kwh_intermediate_limit) - p.kwh_basic_limit, 0);
+      const b3 = Math.max(kwh - p.kwh_intermediate_limit, 0);
+      const energy =
+        b1 * p.mxn_per_kwh_basic +
+        b2 * p.mxn_per_kwh_intermediate +
+        b3 * p.mxn_per_kwh_exceed;
+      return round2(energy + (p.fixed_mxn || 0));
+    }
+    case "DAC": {
+      const p = params as TariffParamsDAC;
+      return round2(p.mxn_per_kwh * kwh + (p.fixed_mxn || 0));
+    }
     case "GDMT": {
-      const energy = params.mxn_per_kwh * kwh;
-      const demandKW = estimateDemandKW(kwh, params.assumed_load_factor);
-      const demand = params.mxn_per_kw_demand * demandKW;
-      return energy + demand + (params.fixed_mxn || 0);
+      const p = params as TariffParamsGDMT;
+      const energy = p.mxn_per_kwh * kwh;
+      const demandKW = estimateDemandKW(kwh, p.assumed_load_factor);
+      const demand = p.mxn_per_kw_demand * demandKW;
+      return round2(energy + demand + (p.fixed_mxn || 0));
     }
     case "GDMTH": {
-      const sp = params.split_punta, si = params.split_intermedia, sb = params.split_base;
-      const kwhP = kwh * sp, kwhI = kwh * si, kwhB = kwh * sb;
-      const energy = params.mxn_per_kwh_punta * kwhP + params.mxn_per_kwh_intermedia * kwhI + params.mxn_per_kwh_base * kwhB;
-      const demandKW = estimateDemandKW(kwh, params.assumed_load_factor);
-      const demand = params.mxn_per_kw_demand * demandKW;
-      return energy + demand + (params.fixed_mxn || 0);
+      const p = params as TariffParamsGDMTH;
+      const kwhP = kwh * p.split_punta, kwhI = kwh * p.split_intermedia, kwhB = kwh * p.split_base;
+      const energy = p.mxn_per_kwh_punta * kwhP + p.mxn_per_kwh_intermedia * kwhI + p.mxn_per_kwh_base * kwhB;
+      const demandKW = estimateDemandKW(kwh, p.assumed_load_factor);
+      const demand = p.mxn_per_kw_demand * demandKW;
+      return round2(energy + demand + (p.fixed_mxn || 0));
     }
-    default:
-      return NaN;
   }
 }
 
-function billsByMonth(consumption: MonthlyMap, tariff: Tariff, params: any) {
+function billsByMonth(consumption: MonthlyMap, tariff: Tariff, params: TariffParams): MonthlyMap {
   const out: MonthlyMap = {};
-  MONTHS.forEach((m) => (out[m] = round2(billCFE(tariff, consumption[m] || 0, params))));
+  MONTHS.forEach((m) => (out[m] = billCFE(tariff, consumption[m] || 0, params)));
   return out;
 }
-
-function round2(n: number) { return Math.round((n + Number.EPSILON) * 100) / 100; }
 
 function applyNetMetering(consumption: MonthlyMap, generation: MonthlyMap, netMetering: boolean, carryover: boolean) {
   const net: MonthlyMap = {};
@@ -130,7 +178,7 @@ function applyNetMetering(consumption: MonthlyMap, generation: MonthlyMap, netMe
       creditsTrace[m] = carryover ? wallet : 0;
       return;
     }
-    let withinNet = cons - gen; // + import / - export
+    let withinNet = cons - gen;
     if (carryover) {
       if (withinNet > 0) {
         const use = Math.min(wallet, withinNet);
@@ -149,38 +197,48 @@ function applyNetMetering(consumption: MonthlyMap, generation: MonthlyMap, netMe
   return { net, creditsTrace };
 }
 
-function billsWithSolar(consumption: MonthlyMap, generation: MonthlyMap, tariff: Tariff, params: any, netMetering: boolean, carryover: boolean) {
+function billsWithSolar(
+  consumption: MonthlyMap,
+  generation: MonthlyMap,
+  tariff: Tariff,
+  params: TariffParams,
+  netMetering: boolean,
+  carryover: boolean
+): { bills: MonthlyMap; creditsTrace: MonthlyMap } {
   const { net, creditsTrace } = applyNetMetering(consumption, generation, netMetering, carryover);
   const bills: MonthlyMap = {};
   MONTHS.forEach((m) => {
     const kwh = net[m];
-    if (tariff === "GDMT" || tariff === "GDMTH") {
-      // Energy on net kWh + demand on original kWh (conservador)
-      if (tariff === "GDMT") {
-        const energy = params.mxn_per_kwh * kwh;
-        const demandKW = estimateDemandKW(consumption[m] || 0, params.assumed_load_factor);
-        const demand = params.mxn_per_kw_demand * demandKW;
-        bills[m] = round2(energy + demand + (params.fixed_mxn || 0));
-      } else {
-        const sp = params.split_punta, si = params.split_intermedia, sb = params.split_base;
-        const kwhP = kwh * sp, kwhI = kwh * si, kwhB = kwh * sb;
-        const energy = params.mxn_per_kwh_punta * kwhP + params.mxn_per_kwh_intermedia * kwhI + params.mxn_per_kwh_base * kwhB;
-        const demandKW = estimateDemandKW(consumption[m] || 0, params.assumed_load_factor);
-        const demand = params.mxn_per_kw_demand * demandKW;
-        bills[m] = round2(energy + demand + (params.fixed_mxn || 0));
-      }
+    if (tariff === "GDMT") {
+      const p = params as TariffParamsGDMT;
+      const energy = p.mxn_per_kwh * kwh;
+      const demandKW = estimateDemandKW(consumption[m] || 0, p.assumed_load_factor);
+      const demand = p.mxn_per_kw_demand * demandKW;
+      bills[m] = round2(energy + demand + (p.fixed_mxn || 0));
+    } else if (tariff === "GDMTH") {
+      const p = params as TariffParamsGDMTH;
+      const kwhP = kwh * p.split_punta, kwhI = kwh * p.split_intermedia, kwhB = kwh * p.split_base;
+      const energy = p.mxn_per_kwh_punta * kwhP + p.mxn_per_kwh_intermedia * kwhI + p.mxn_per_kwh_base * kwhB;
+      const demandKW = estimateDemandKW(consumption[m] || 0, p.assumed_load_factor);
+      const demand = p.mxn_per_kw_demand * demandKW;
+      bills[m] = round2(energy + demand + (p.fixed_mxn || 0));
     } else {
-      bills[m] = round2(billCFE(tariff, kwh, params));
+      // 01 / DAC: neteo sobre energía
+      bills[m] = billCFE(tariff, kwh, params);
     }
   });
   return { bills, creditsTrace };
 }
 
+// ----------------------------
+// ROI / Finanzas
+// ----------------------------
+
 function sumMap(map: MonthlyMap) {
   return MONTHS.reduce((acc, m) => acc + (map[m] || 0), 0);
 }
 
-// Basic IRR solver (Newton + bisection fallback)
+// IRR (Newton + bisección)
 function irr(cashflows: number[], guess = 0.1) {
   const npv = (r: number) => cashflows.reduce((acc, cf, i) => acc + cf / Math.pow(1 + r, i), 0);
   const dnpv = (r: number) => cashflows.slice(1).reduce((acc, cf, i) => acc - (i + 1) * cf / Math.pow(1 + r, i + 2), 0);
@@ -191,9 +249,8 @@ function irr(cashflows: number[], guess = 0.1) {
     if (Math.abs(f) < 1e-6) return r;
     if (df === 0 || !isFinite(df)) break;
     r = r - f / df;
-    if (r <= -0.99) r = -0.99; // avoid invalid domain
+    if (r <= -0.99) r = -0.99;
   }
-  // Bisection in [-0.9, 1]
   let low = -0.9, high = 1.0;
   for (let i = 0; i < 200; i++) {
     const mid = (low + high) / 2;
@@ -205,7 +262,16 @@ function irr(cashflows: number[], guess = 0.1) {
   return NaN;
 }
 
-function roiCashflows(capex: number, billsNow: MonthlyMap, billsSolarY1: MonthlyMap, discount: number, inflation: number, omRate: number, years: number, degradation = 0.005) {
+function roiCashflows(
+  capex: number,
+  billsNow: MonthlyMap,
+  billsSolarY1: MonthlyMap,
+  discount: number,
+  inflation: number,
+  omRate: number,
+  years: number,
+  degradation = 0.005
+) {
   const annualNow = sumMap(billsNow);
   const annualSolarY1 = sumMap(billsSolarY1);
   const rows: { year: number; cf: number; pv: number; cum: number }[] = [];
@@ -233,14 +299,20 @@ function roiCashflows(capex: number, billsNow: MonthlyMap, billsSolarY1: Monthly
   return { rows, payback, npv, irr: irrVal };
 }
 
-function downloadCSV(filename: string, tables: Record<string, any[]>) {
+// ----------------------------
+// CSV export
+// ----------------------------
+
+function downloadCSV(filename: string, tables: Record<string, Row[]>) {
   const parts: string[] = [];
   for (const [name, rows] of Object.entries(tables)) {
     parts.push(`# ${name}`);
     if (!rows.length) continue;
     const cols = Object.keys(rows[0]);
     parts.push(cols.join(","));
-    for (const r of rows) parts.push(cols.map((c) => String((r as any)[c])).join(","));
+    for (const r of rows) {
+      parts.push(cols.map((c) => String(r[c] ?? "")).join(","));
+    }
     parts.push("");
   }
   const blob = new Blob([parts.join("\n")], { type: "text/csv;charset=utf-8;" });
@@ -287,9 +359,12 @@ export default function Page() {
   const [netMetering, setNetMetering] = useState(true);
   const [carryover, setCarryover] = useState(false);
 
-  const params: any = tariff === "01" ? t01 : tariff === "DAC" ? tDAC : tariff === "GDMT" ? tGDMT : tGDMTH;
+  const params: TariffParams =
+    tariff === "01" ? t01 :
+    tariff === "DAC" ? tDAC :
+    tariff === "GDMT" ? tGDMT : tGDMTH;
 
-  // Calculations
+  // Cálculos principales
   const annualKWhPerKW = useMemo(() => annualPerKwGeneration(psh, pr, availability, extraLoss), [psh, pr, availability, extraLoss]);
 
   const { panels, systemKW, expectedAnnual, annualLoad } = useMemo(
@@ -320,7 +395,10 @@ export default function Page() {
 
   const capex = useMemo(() => systemKW * costPerKW, [systemKW, costPerKW]);
 
-  const roi = useMemo(() => roiCashflows(capex, billsNow, billsSolar, discount, inflation, omPct, years, degradation), [capex, billsNow, billsSolar, discount, inflation, omPct, years, degradation]);
+  const roi = useMemo(
+    () => roiCashflows(capex, billsNow, billsSolar, discount, inflation, omPct, years, degradation),
+    [capex, billsNow, billsSolar, discount, inflation, omPct, years, degradation]
+  );
 
   const summary = useMemo(() => ([
     { Indicador: "CAPEX (MXN)", Valor: fmt(capex, 0) },
@@ -328,7 +406,7 @@ export default function Page() {
     { Indicador: "Factura anual con PV (MXN)", Valor: fmt(sumMap(billsSolar), 0) },
     { Indicador: "Ahorro anual año 1 (MXN)", Valor: fmt(sumMap(savingsMXN), 0) },
     { Indicador: "Payback (años)", Valor: roi.payback ?? "N/D" },
-    { Indicador: "NPV (MXN, " + years + " años)", Valor: fmt(roi.npv, 0) },
+    { Indicador: `NPV (MXN, ${years} años)`, Valor: fmt(roi.npv, 0) },
     { Indicador: "IRR (anual)", Valor: isFinite(roi.irr) ? `${fmt(roi.irr * 100, 1)}%` : "N/D" },
   ]), [capex, billsNow, billsSolar, savingsMXN, roi, years]);
 
@@ -337,10 +415,15 @@ export default function Page() {
     setConsumption((c) => ({ ...c, [m]: v }));
   }
 
-  function exportCSV() {
+  function downloadAllAsCSV() {
     const genRows = MONTHS.map((m) => ({ Mes: m, Generacion_kWh: genMonth[m] }));
     const billNowRows = MONTHS.map((m) => ({ Mes: m, Consumo_kWh: consumption[m], Factura_actual_MXN: billsNow[m] }));
-    const billSolarRows = MONTHS.map((m) => ({ Mes: m, Consumo_neto_kWh: (consumption[m] - genMonth[m]) < 0 && carryover ? 0 : Math.max(consumption[m] - genMonth[m], 0), Factura_con_PV_MXN: billsSolar[m], Creditos_kWh: creditsTrace[m] }));
+    const billSolarRows = MONTHS.map((m) => ({
+      Mes: m,
+      Consumo_neto_kWh: (consumption[m] - genMonth[m]) < 0 && carryover ? 0 : Math.max(consumption[m] - genMonth[m], 0),
+      Factura_con_PV_MXN: billsSolar[m],
+      Creditos_kWh: creditsTrace[m]
+    }));
     const savingsRows = MONTHS.map((m) => ({ Mes: m, Ahorro_MXN: savingsMXN[m], Ahorro_pct: savingsPct[m] }));
     const summaryRows = summary.map((r) => ({ Indicador: r.Indicador, Valor: r.Valor }));
     downloadCSV("dimensionador_gdl.csv", {
@@ -361,7 +444,7 @@ export default function Page() {
       </header>
 
       <main className="p-6 grid grid-cols-1 xl:grid-cols-3 gap-6">
-        {/* Left column: Inputs */}
+        {/* Columna izquierda: entradas */}
         <section className="xl:col-span-1 space-y-6">
           <Card title="Consumo mensual (kWh)">
             <div className="grid grid-cols-3 gap-3">
@@ -430,19 +513,27 @@ export default function Page() {
                 ))}
               </div>
 
-              {/* Params per tariff */}
+              {/* 01 por bloques */}
               {tariff === "01" && (
                 <div className="grid grid-cols-2 gap-3">
-                  <Num label="MXN/kWh" value={t01.mxn_per_kwh} setValue={(v)=>setT01({...t01, mxn_per_kwh:v})} step={0.1} />
                   <Num label="Cargo fijo (MXN)" value={t01.fixed_mxn} setValue={(v)=>setT01({...t01, fixed_mxn:v})} step={10} />
+                  <Num label="Límite Básico (kWh/mes)" value={t01.kwh_basic_limit} setValue={(v)=>setT01({...t01, kwh_basic_limit:v})} step={5} />
+                  <Num label="Límite Intermedio (kWh/mes)" value={t01.kwh_intermediate_limit} setValue={(v)=>setT01({...t01, kwh_intermediate_limit:v})} step={5} />
+                  <Num label="Tarifa Básico ($/kWh)" value={t01.mxn_per_kwh_basic} setValue={(v)=>setT01({...t01, mxn_per_kwh_basic:v})} step={0.05} />
+                  <Num label="Tarifa Intermedio ($/kWh)" value={t01.mxn_per_kwh_intermediate} setValue={(v)=>setT01({...t01, mxn_per_kwh_intermediate:v})} step={0.05} />
+                  <Num label="Tarifa Excedente ($/kWh)" value={t01.mxn_per_kwh_exceed} setValue={(v)=>setT01({...t01, mxn_per_kwh_exceed:v})} step={0.05} />
                 </div>
               )}
+
+              {/* DAC */}
               {tariff === "DAC" && (
                 <div className="grid grid-cols-2 gap-3">
                   <Num label="MXN/kWh" value={tDAC.mxn_per_kwh} setValue={(v)=>setTDAC({...tDAC, mxn_per_kwh:v})} step={0.1} />
                   <Num label="Cargo fijo (MXN)" value={tDAC.fixed_mxn} setValue={(v)=>setTDAC({...tDAC, fixed_mxn:v})} step={10} />
                 </div>
               )}
+
+              {/* GDMT */}
               {tariff === "GDMT" && (
                 <div className="grid grid-cols-2 gap-3">
                   <Num label="MXN/kWh" value={tGDMT.mxn_per_kwh} setValue={(v)=>setTGDMT({...tGDMT, mxn_per_kwh:v})} step={0.1} />
@@ -451,6 +542,8 @@ export default function Page() {
                   <Num label="Load factor" value={tGDMT.assumed_load_factor} setValue={(v)=>setTGDMT({...tGDMT, assumed_load_factor:v})} step={0.05} />
                 </div>
               )}
+
+              {/* GDMTH */}
               {tariff === "GDMTH" && (
                 <div className="grid grid-cols-2 gap-3">
                   <Num label="MXN/kWh punta" value={tGDMTH.mxn_per_kwh_punta} setValue={(v)=>setTGDMTH({...tGDMTH, mxn_per_kwh_punta:v})} step={0.1} />
@@ -468,11 +561,11 @@ export default function Page() {
           </Card>
 
           <div className="flex gap-3">
-            <button onClick={exportCSV} className="px-4 py-2 rounded-xl bg-black text-white">Descargar CSV</button>
+            <button onClick={downloadAllAsCSV} className="px-4 py-2 rounded-xl bg-black text-white">Descargar CSV</button>
           </div>
         </section>
 
-        {/* Right columns: Outputs */}
+        {/* Columnas derechas: salidas */}
         <section className="xl:col-span-2 space-y-6">
           <Card title="Dimensionamiento del sistema">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
@@ -508,7 +601,9 @@ export default function Page() {
             <div className="mt-4 overflow-auto">
               <Table rows={roi.rows.map((r) => ({ "Año": r.year, "Flujo (MXN)": fmt(r.cf, 2), "Flujo descontado (MXN)": fmt(r.pv, 2), "Acumulado (MXN)": fmt(r.cum, 2) }))} />
             </div>
-            <p className="text-xs text-neutral-500 mt-3">Nota: Modelo simplificado. Las tarifas CFE varían por región/temporada y pueden incluir bloques, demanda medida y medición horaria. Ajusta los parámetros a tu recibo.</p>
+            <p className="text-xs text-neutral-500 mt-3">
+              Nota: Modelo simplificado. Las tarifas CFE varían por región/temporada y pueden incluir bloques, demanda medida y medición horaria. Ajusta los parámetros a tu recibo.
+            </p>
           </Card>
         </section>
       </main>
@@ -517,7 +612,7 @@ export default function Page() {
 }
 
 // ----------------------------
-// Small UI bits
+// UI helpers
 // ----------------------------
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
@@ -542,7 +637,7 @@ function KV({ k, v }: { k: string; v: string }) {
   );
 }
 
-function Table({ rows }: { rows: Record<string, string | number>[] }) {
+function Table({ rows }: { rows: Row[] }) {
   const cols = rows.length ? Object.keys(rows[0]) : [];
   return (
     <div className="overflow-auto">
@@ -558,7 +653,7 @@ function Table({ rows }: { rows: Record<string, string | number>[] }) {
           {rows.map((r, i) => (
             <tr key={i} className="border-b last:border-0">
               {cols.map((c) => (
-                <td key={c} className="px-2 py-2 whitespace-nowrap">{(r as any)[c]}</td>
+                <td key={c} className="px-2 py-2 whitespace-nowrap">{String(r[c] ?? "")}</td>
               ))}
             </tr>
           ))}
