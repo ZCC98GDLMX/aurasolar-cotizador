@@ -4,6 +4,14 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
+// usando ruta relativa (seguro)
+import NumField from "../components/Num";
+
+// o si ya tienes alias configurado en tsconfig
+// import { Num } from "@/components/Num";
+
+
+
 
 // ----------------------------
 // Tipos & helpers
@@ -595,13 +603,37 @@ export default function Page() {
           </Card>
 
           <Card title="Finanzas">
-            <div className="grid grid-cols-2 gap-3">
-              <Num label="Tasa de descuento" value={discount} setValue={setDiscount} step={0.01} />
-              <Num label="Inflación energética" value={inflation} setValue={setInflation} step={0.01} />
-              <Num label="Años de análisis" value={years} setValue={setYears} step={1} />
-              <Num label="Degradación anual" value={degradation} setValue={setDegradation} step={0.001} />
-            </div>
-          </Card>
+  <div className="grid grid-cols-2 gap-3">
+    <NumField
+      label="Tasa de descuento"
+      value={discount}
+      setValue={setDiscount}
+      step={0.01}
+      help="Tasa nominal anual (WACC/costo de oportunidad) para traer los flujos a valor presente: Flujo descontado = Flujo / (1+r)^n."
+    />
+    <NumField
+      label="Inflación energética"
+      value={inflation}
+      setValue={setInflation}
+      step={0.01}
+      help="Crecimiento anual esperado de tarifas eléctricas; hace que el ahorro en MXN aumente cada año."
+    />
+    <NumField
+      label="Años de análisis"
+      value={years}
+      setValue={setYears}
+      step={1}
+      help="Horizonte de proyección para NPV/IRR (vida útil considerada)."
+    />
+    <NumField
+      label="Degradación anual"
+      value={degradation}
+      setValue={setDegradation}
+      step={0.001}
+      help="Pérdida anual de capacidad del arreglo: kWhₙ = kWh₁ × (1 − d)^(n−1)."
+    />
+  </div>
+</Card>
 
           <Card title="Tarifa CFE">
             <div className="space-y-3">
