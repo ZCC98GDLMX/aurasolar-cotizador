@@ -67,13 +67,14 @@ function monthlyShape(amplitude = 0.10) {
 
 // 01 con bloques bimestrales + cargo fijo bimestral
 interface TariffParams01Bim {
-  fixed_mxn_bim: number;              // cargo fijo por bimestre
-  kwh_basic_limit_bim: number;        // kWh/bimestre bloque Básico
-  kwh_intermediate_limit_bim: number; // kWh/bimestre acumulado Básico+Intermedio
+  fixed_mxn_bim: number;               // cargo fijo por bimestre
+  kwh_basic_block_bim: number;         // tamaño del BLOQUE Básico (p.ej. 150 kWh/bim)
+  kwh_intermediate_block_bim: number;  // tamaño del BLOQUE Intermedio (p.ej. 130 kWh/bim)
   mxn_per_kwh_basic: number;
   mxn_per_kwh_intermediate: number;
   mxn_per_kwh_exceed: number;
 }
+
 
 // DAC simple bimestral
 interface TariffParamsDACBim { mxn_per_kwh: number; fixed_mxn_bim: number; }
@@ -114,13 +115,14 @@ type TariffParams =
 
 const DEFAULT_TARIFFS = {
   "01": {
-    fixed_mxn_bim: 200,
-    kwh_basic_limit_bim: 150,         // ~75 kWh/mes *2
-    kwh_intermediate_limit_bim: 280,  // ~140 kWh/mes *2
-    mxn_per_kwh_basic: 1.0,
-    mxn_per_kwh_intermediate: 1.8,
-    mxn_per_kwh_exceed: 3.5,
-  } as TariffParams01Bim,
+  fixed_mxn_bim: 200,
+  kwh_basic_block_bim: 150,         // primeros 150 kWh
+  kwh_intermediate_block_bim: 130,  // siguientes 130 kWh
+  mxn_per_kwh_basic: 1.0,
+  mxn_per_kwh_intermediate: 1.8,
+  mxn_per_kwh_exceed: 3.5,
+} as TariffParams01Bim,
+
 
   DAC: {
     mxn_per_kwh: 6.2,
@@ -185,13 +187,19 @@ function bimestralGeneration(systemKW: number, annualKWhPerKW: number): BMap {
 function billCFEBim(tariff: Tariff, kwhBim: number, params: TariffParams): number {
   switch (tariff) {
     case "01": {
-      const p = params as TariffParams01Bim;
-      const b1 = Math.max(Math.min(kwhBim, p.kwh_basic_limit_bim), 0);
-      const b2 = Math.max(Math.min(kwhBim, p.kwh_intermediate_limit_bim) - p.kwh_basic_limit_bim, 0);
-      const b3 = Math.max(kwhBim - p.kwh_intermediate_limit_bim, 0);
-      const energy = b1*p.mxn_per_kwh_basic + b2*p.mxn_per_kwh_intermediate + b3*p.mxn_per_kwh_exceed;
-      return round2(energy + (p.fixed_mxn_bim || 0));
-    }
+  const p = params as TariffParams01Bim;
+  // Bloques puros: primeros N (básico), siguientes M (intermedio), resto (excedente)
+  const b1 = Math.max(Math.min(kwhBim, p.kwh_basic_block_bim), 0);
+  const remAfterB1 = Math.max(kwhBim - b1, 0);
+  const b2 = Math.max(Math.min(remAfterB1, p.kwh_intermediate_block_bim), 0);
+  const b3 = Math.max(remAfterB1 - b2, 0);
+  const energy =
+    b1 * p.mxn_per_kwh_basic +
+    b2 * p.mxn_per_kwh_intermediate +
+    b3 * p.mxn_per_kwh_exceed;
+  return round2(energy + (p.fixed_mxn_bim || 0));
+}
+
     case "DAC": {
       const p = params as TariffParamsDACBim;
       return round2(p.mxn_per_kwh * kwhBim + (p.fixed_mxn_bim || 0));
@@ -589,15 +597,15 @@ export default function Page() {
 
               {/* 01 bimestral */}
               {tariff === "01" && (
-                <div className="grid grid-cols-2 gap-3">
-                  <Num label="Cargo fijo BIM (MXN)" value={t01.fixed_mxn_bim} setValue={(v)=>setT01({...t01, fixed_mxn_bim:v})} step={10} />
-                  <Num label="Límite Básico (kWh/BIM)" value={t01.kwh_basic_limit_bim} setValue={(v)=>setT01({...t01, kwh_basic_limit_bim:v})} step={10} />
-                  <Num label="Límite Intermedio (kWh/BIM)" value={t01.kwh_intermediate_limit_bim} setValue={(v)=>setT01({...t01, kwh_intermediate_limit_bim:v})} step={10} />
-                  <Num label="Tarifa Básico ($/kWh)" value={t01.mxn_per_kwh_basic} setValue={(v)=>setT01({...t01, mxn_per_kwh_basic:v})} step={0.05} />
-                  <Num label="Tarifa Intermedio ($/kWh)" value={t01.mxn_per_kwh_intermediate} setValue={(v)=>setT01({...t01, mxn_per_kwh_intermediate:v})} step={0.05} />
-                  <Num label="Tarifa Excedente ($/kWh)" value={t01.mxn_per_kwh_exceed} setValue={(v)=>setT01({...t01, mxn_per_kwh_exceed:v})} step={0.05} />
-                </div>
-              )}
+  <div className="grid grid-cols-2 gap-3">
+    <Num label="Cargo fijo BIM (MXN)" value={t01.fixed_mxn_bim} setValue={(v)=>setT01({...t01, fixed_mxn_bim:v})} step={10} />
+    <Num label="Bloque Básico (kWh/BIM)" value={t01.kwh_basic_block_bim} setValue={(v)=>setT01({...t01, kwh_basic_block_bim:v})} step={10} />
+    <Num label="Bloque Intermedio (kWh/BIM)" value={t01.kwh_intermediate_block_bim} setValue={(v)=>setT01({...t01, kwh_intermediate_block_bim:v})} step={10} />
+    <Num label="Tarifa Básico ($/kWh)" value={t01.mxn_per_kwh_basic} setValue={(v)=>setT01({...t01, mxn_per_kwh_basic:v})} step={0.05} />
+    <Num label="Tarifa Intermedio ($/kWh)" value={t01.mxn_per_kwh_intermediate} setValue={(v)=>setT01({...t01, mxn_per_kwh_intermediate:v})} step={0.05} />
+    <Num label="Tarifa Excedente ($/kWh)" value={t01.mxn_per_kwh_exceed} setValue={(v)=>setT01({...t01, mxn_per_kwh_exceed:v})} step={0.05} />
+  </div>
+)}
 
               {/* DAC bimestral */}
               {tariff === "DAC" && (
