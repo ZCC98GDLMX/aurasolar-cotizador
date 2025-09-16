@@ -736,7 +736,12 @@ export default function Page() {
                 />
                 <span className="font-medium">Usar modo calibrado PDBT</span>
                 <span className="text-xs text-gray-500">(fijo + $/kWh ajustado a tus recibos)</span>
-                <Help text="Al activar este modo, se ignoran los unitarios de arriba y el costo PDBT se calcula como: costo_bimestre = fijo + ($/kWh × kWh). Los valores están calibrados con tus recibos e incluyen IVA." />
+                <Help text={`Al activar este modo, se ignoran los unitarios de arriba y el costo PDBT se calcula como:
+costo_bimestre = fijo + ($/kWh × kWh). Los valores están calibrados con tus recibos e incluyen IVA.
+
+📌 Nota: Si NO activas este modo, cada concepto (Distribución, Transmisión, Energía, etc.) debe ingresarse como un valor unitario en $/kWh. 
+Para obtenerlo desde tu recibo, divide el costo total de cada concepto entre los kWh facturados en ese bimestre.`} />
+
               </label>
 
               {usePdbtCal && (
