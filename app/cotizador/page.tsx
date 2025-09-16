@@ -21,8 +21,7 @@ const BIM_LABELS: Record<BKey, string> = {
   B6: "B6 (Nov–Dic)",
 };
 
-const MONTHS = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"] as const;
-type Month = typeof MONTHS[number];
+type Month = "Ene"|"Feb"|"Mar"|"Abr"|"May"|"Jun"|"Jul"|"Ago"|"Sep"|"Oct"|"Nov"|"Dic";
 
 const MONTH_INDEX: Record<Month, number> = {
   Ene: 0, Feb: 1, Mar: 2, Abr: 3, May: 4, Jun: 5,
@@ -461,16 +460,17 @@ export default function Page() {
   );
 
   // Ahorros bimestrales
-  // % de ahorro por bimestre = ahorro / factura actual * 100
+  // % de ahorro por bimestre = (bill actual - bill con PV) / bill actual * 100
 const savingsBimPct = useMemo(() => {
   const out: BMap = { B1:0,B2:0,B3:0,B4:0,B5:0,B6:0 };
   (Object.keys(out) as BKey[]).forEach((b) => {
     const base = billsNowBim[b] || 0;
-    const sav  = savingsBimMXN[b] || 0;
+    const sav  = Math.max((billsNowBim[b] || 0) - (billsSolarBim[b] || 0), 0);
     out[b] = base > 0 ? round2((sav / base) * 100) : 0;
   });
   return out;
-}, [savingsBimMXN, billsNowBim]);
+}, [billsNowBim, billsSolarBim]);
+
 
 
   const capex = useMemo(() => systemKW * costPerKW, [systemKW, costPerKW]);
@@ -487,11 +487,12 @@ const savingsBimPct = useMemo(() => {
     { Indicador: "Generación anual esperada (kWh)", Valor: fmt(expectedAnnual, 0) },
     { Indicador: "Factura anual actual (MXN)", Valor: fmt(sumBMap(billsNowBim), 0) },
     { Indicador: "Factura anual con PV (MXN)", Valor: fmt(sumBMap(billsSolarBim), 0) },
-    { Indicador: "Ahorro anual año 1 (MXN)", Valor: fmt(sumBMap(savingsBimMXN), 0) },
+    { Indicador: "Ahorro anual año 1 (MXN)", Valor: fmt(sumBMap(billsNowBim) - sumBMap(billsSolarBim), 0) },
     { Indicador: "Payback (años)", Valor: roi.payback ?? "N/D" },
     { Indicador: `NPV (MXN, ${years} años)`, Valor: fmt(roi.npv, 0) },
     { Indicador: "IRR (anual)", Valor: isFinite(roi.irr) ? `${fmt(roi.irr * 100, 1)}%` : "N/D" },
-  ]), [capex, annualLoad, expectedAnnual, billsNowBim, billsSolarBim, savingsBimMXN, roi, years]);
+  ]), [capex, annualLoad, expectedAnnual, billsNowBim, billsSolarBim, roi, years]);
+
 
   function updateBim(b: BKey, val: string) {
     const v = Number(val.replace(",", ".")) || 0;
@@ -510,7 +511,7 @@ const savingsBimPct = useMemo(() => {
     }));
     const savingsRows = bimKeys.map((b) => ({
   Bimestre: BIM_LABELS[b],
-  Ahorro_MXN: savingsBimMXN[b],
+  Ahorro_MXN: Math.max((billsNowBim[b] || 0) - (billsSolarBim[b] || 0), 0),
   Ahorro_pct: savingsBimPct[b],
 }));
 
@@ -705,7 +706,7 @@ const savingsBimPct = useMemo(() => {
           <Card title="Ahorro por bimestre">
   <Table rows={(Object.keys(BIM_LABELS) as BKey[]).map((b) => ({
     Bimestre: BIM_LABELS[b],
-    "Ahorro (MXN)": fmt(savingsBimMXN[b], 2),
+    "Ahorro (MXN)": fmt(Math.max((billsNowBim[b] || 0) - (billsSolarBim[b] || 0), 0), 2),
     "% Ahorro": `${fmt(savingsBimPct[b], 1)}%`,
   }))} />
 </Card>
