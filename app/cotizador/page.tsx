@@ -8,6 +8,32 @@ import React, { useMemo, useState, useEffect } from "react";
 import NumField from "../components/Num";
 import { Help } from "../components/Help";
 
+// === Persistencia local (localStorage) ===
+function useLocalStorageState<T>(key: string, initial: T) {
+  const [state, setState] = React.useState<T>(() => {
+    if (typeof window === "undefined") return initial;
+    try {
+      const raw = window.localStorage.getItem(key);
+      return raw === null ? initial : (JSON.parse(raw) as T);
+    } catch {
+      return initial;
+    }
+  });
+
+  React.useEffect(() => {
+    try {
+      window.localStorage.setItem(key, JSON.stringify(state));
+    } catch { /* noop */ }
+  }, [key, state]);
+
+  return [state, setState] as const;
+}
+
+// Si algún día cambias estructura, sube esta versión para invalidar lo viejo:
+const LS_VERSION = "v2";
+const lsKey = (name: string) => `AURA_SOLAR_${LS_VERSION}:${name}`;
+
+
 // ========================
 //  PDBT CALIBRADO (GDL)
 // ========================
@@ -434,44 +460,64 @@ function downloadCSV(filename: string, tables: Record<string, Row[]>) {
 
 export default function Page() {
   // Consumo bimestral (kWh)
-  const [cons, setCons] = useState<BMap>({
-    B1: 900, B2: 980, B3: 1100, B4: 1200, B5: 1000, B6: 950,
-  });
+const [cons, setCons] = useLocalStorageState<BMap>(
+  lsKey("cons"),
+  { B1: 900, B2: 980, B3: 1100, B4: 1200, B5: 1000, B6: 950 }
+);
 
-  // Producción (GDL)
-  const [psh, setPsh] = useState(5.5);
-  const [pr, setPr] = useState(0.8);
-  const [availability, setAvailability] = useState(0.99);
-  const [extraLoss, setExtraLoss] = useState(0);
+// Producción (GDL)
+const [psh, setPsh] = useLocalStorageState(lsKey("psh"), 5.5);
+const [pr, setPr] = useLocalStorageState(lsKey("pr"), 0.8);
+const [availability, setAvailability] = useLocalStorageState(lsKey("availability"), 0.99);
+const [extraLoss, setExtraLoss] = useLocalStorageState(lsKey("extraLoss"), 0);
 
-  // Sistema
-  const [panelW, setPanelW] = useState(550);
-  const [costPerKW, setCostPerKW] = useState(23000);
-  const [targetCoverage, setTargetCoverage] = useState(0.95);
+// Sistema
+const [panelW, setPanelW] = useLocalStorageState(lsKey("panelW"), 550);
+const [costPerKW, setCostPerKW] = useLocalStorageState(lsKey("costPerKW"), 23000);
+const [targetCoverage, setTargetCoverage] = useLocalStorageState(lsKey("targetCoverage"), 0.95);
 
-  // Finanzas
-  const [discount, setDiscount] = useState(0.10);
-  const [inflation, setInflation] = useState(0.05);
-  const [years, setYears] = useState(25);
-  const [degradation, setDegradation] = useState(0.005);
-  const [omPct, setOmPct] = useState(0.01);
+// Finanzas
+const [discount, setDiscount] = useLocalStorageState(lsKey("discount"), 0.10);
+const [inflation, setInflation] = useLocalStorageState(lsKey("inflation"), 0.05);
+const [years, setYears] = useLocalStorageState(lsKey("years"), 25);
+const [degradation, setDegradation] = useLocalStorageState(lsKey("degradation"), 0.005);
+const [omPct, setOmPct] = useLocalStorageState(lsKey("omPct"), 0.01);
 
-  // Tarifas
-  const [tariff, setTariff] = useState<Tariff>("PDBT");
-  const [t01, setT01] = useState(DEFAULT_TARIFFS["01"]);
-  const [tDAC, setTDAC] = useState(DEFAULT_TARIFFS.DAC);
-  const [tGDMT, setTGDMT] = useState(DEFAULT_TARIFFS.GDMT); // por si copias/pegas
-  const [tGDMTH, setTGDMTH] = useState(DEFAULT_TARIFFS.GDMTH);
-  const [tPDBT, setTPDBT] = useState(DEFAULT_TARIFFS.PDBT);
+// Tarifas seleccionada y parámetros
+const [tariff, setTariff] = useLocalStorageState<Tariff>(lsKey("tariff"), "PDBT");
+const [t01, setT01] = useLocalStorageState(lsKey("t01"), DEFAULT_TARIFFS["01"]);
+const [tDAC, setTDAC] = useLocalStorageState(lsKey("tDAC"), DEFAULT_TARIFFS.DAC);
+const [tGDMT, setTGDMT] = useLocalStorageState(lsKey("tGDMT"), DEFAULT_TARIFFS.GDMT);
+const [tGDMTH, setTGDMTH] = useLocalStorageState(lsKey("tGDMTH"), DEFAULT_TARIFFS.GDMTH);
+const [tPDBT, setTPDBT] = useLocalStorageState(lsKey("tPDBT"), DEFAULT_TARIFFS.PDBT);
 
-  // Toggle UI para PDBT calibrado
-  const [usePdbtCal, setUsePdbtCal] = useState(true);
+// Toggle calibrado PDBT
+const [usePdbtCal, setUsePdbtCal] = useLocalStorageState(lsKey("usePdbtCal"), true);
 
-  const params: TariffParams =
-    tariff === "01" ? t01 :
-    tariff === "DAC" ? tDAC :
-    tariff === "GDMT" ? tGDMT :
-    tariff === "GDMTH" ? tGDMTH : tPDBT;
+function resetDefaults() {
+  setCons({ B1: 900, B2: 980, B3: 1100, B4: 1200, B5: 1000, B6: 950 });
+  setPsh(5.5);
+  setPr(0.8);
+  setAvailability(0.99);
+  setExtraLoss(0);
+  setPanelW(550);
+  setCostPerKW(23000);
+  setTargetCoverage(0.95);
+  setDiscount(0.10);
+  setInflation(0.05);
+  setYears(25);
+  setDegradation(0.005);
+  setOmPct(0.01);
+  setTariff("PDBT");
+  setT01(DEFAULT_TARIFFS["01"]);
+  setTDAC(DEFAULT_TARIFFS.DAC);
+  setTGDMT(DEFAULT_TARIFFS.GDMT);
+  setTGDMTH(DEFAULT_TARIFFS.GDMTH);
+  setTPDBT(defaultPDBT);
+  setUsePdbtCal(true);
+  localStorage.clear(); // limpia el almacenamiento local también
+}
+
 
   // Dimensionamiento
   const annualKWhPerKW = useMemo(
@@ -500,6 +546,12 @@ export default function Page() {
     () => bimestralGeneration(systemKW, annualKWhPerKW),
     [systemKW, annualKWhPerKW]
   );
+  const params: TariffParams =
+  tariff === "01"   ? t01  :
+  tariff === "DAC"  ? tDAC :
+  tariff === "GDMT" ? tGDMT :
+  tariff === "GDMTH"? tGDMTH : tPDBT;
+
 
   // Recibos
   const billsNowBim = useMemo(
@@ -724,101 +776,107 @@ export default function Page() {
 
           {/* Toggle + tooltip para PDBT */}
           {tariff === "PDBT" && (
-            <div className="rounded-2xl border p-4 mt-3">
-              <h4 className="mb-2 text-sm font-semibold">Opciones PDBT</h4>
+  <div className="rounded-2xl border p-4 mt-3">
+    <h4 className="mb-2 text-sm font-semibold">Opciones PDBT</h4>
 
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  className="h-4 w-4"
-                  checked={usePdbtCal}
-                  onChange={(e) => setUsePdbtCal(e.target.checked)}
-                />
-                <span className="font-medium">Usar modo calibrado PDBT</span>
-                <span className="text-xs text-gray-500">(fijo + $/kWh ajustado a tus recibos)</span>
-                <Help text={`Al activar este modo, se ignoran los unitarios de arriba y el costo PDBT se calcula como:
+    <label className="flex items-center gap-2 text-sm">
+      <input
+        type="checkbox"
+        className="h-4 w-4"
+        checked={usePdbtCal}
+        onChange={(e) => setUsePdbtCal(e.target.checked)}
+      />
+      <span className="font-medium">Usar modo calibrado PDBT</span>
+      <span className="text-xs text-gray-500">(fijo + $/kWh ajustado a tus recibos)</span>
+      <Help text={`Al activar este modo, se ignoran los unitarios de arriba y el costo PDBT se calcula como:
 costo_bimestre = fijo + ($/kWh × kWh). Los valores están calibrados con tus recibos e incluyen IVA.
 
-📌 Nota: Si NO activas este modo, cada concepto (Distribución, Transmisión, Energía, etc.) debe ingresarse como un valor unitario en $/kWh. 
-Para obtenerlo desde tu recibo, divide el costo total de cada concepto entre los kWh facturados en ese bimestre.`} />
+📌 Nota: Si NO activas este modo, cada concepto (Distribución, Transmisión, Energía, etc.) debe ingresarse como $/kWh.
+Para obtenerlo desde tu recibo, divide el costo total de cada concepto entre los kWh facturados del bimestre.`} />
+    </label>
 
-              </label>
+    {usePdbtCal && (
+      <p className="text-xs text-gray-500 mt-2">
+        *Calibrado con recibos CFE (IVA incluido): fijo ≈ ${PDBT_FIXED_BIMX_MXN.toFixed(0)} + {PDBT_RATE_MXN_PER_KWH.toFixed(4)} $/kWh.
+      </p>
+    )}
+  </div>
+)}
 
-              {usePdbtCal && (
-                <p className="text-xs text-gray-500 mt-2">
-                  *Calibrado con recibos CFE (IVA incluido): fijo ≈ ${PDBT_FIXED_BIMX_MXN.toFixed(0)} + {PDBT_RATE_MXN_PER_KWH.toFixed(4)} $/kWh.
-                </p>
-              )}
-            </div>
-          )}
+<div className="flex gap-3 mt-3">
+  <button onClick={exportCSV} className="px-4 py-2 rounded-xl bg-black text-white">
+    Descargar CSV
+  </button>
+  <button
+    onClick={resetDefaults}
+    className="px-4 py-2 rounded-xl bg-gray-200 text-black"
+  >
+    Restablecer valores
+  </button>
+</div>
+</section>
 
-          <div className="flex gap-3">
-            <button onClick={exportCSV} className="px-4 py-2 rounded-xl bg-black text-white">
-              Descargar CSV
-            </button>
-          </div>
-        </section>
-
-        {/* Outputs */}
-        <section className="xl:col-span-2 space-y-6">
-          <Card title="Dimensionamiento del sistema">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-              <KV k="Paneles" v={String(panels)} />
-              <KV k="Tamaño (kWdc)" v={fmt(systemKW, 2)} />
-              <KV k="Generación anual esperada (kWh)" v={fmt(sumBMap(genBim), 0)} />
-              <KV k="Consumo anual (kWh)" v={fmt(annualLoad, 0)} />
-              <KV k="kWh/kW-año" v={fmt(annualKWhPerKW, 0)} />
-              <KV k="CAPEX (MXN)" v={fmt(capex, 0)} />
-            </div>
-          </Card>
-
-          <TwoCol>
-            <Card title="Generación por bimestre (kWh)">
-              <Table rows={(Object.keys(BIM_LABELS) as BKey[]).map((b) => ({
-                Bimestre: BIM_LABELS[b], "Generación (kWh)": fmt(genBim[b], 2),
-              }))} />
-            </Card>
-            <Card title="Factura bimestral actual (sin PV)">
-              <Table rows={(Object.keys(BIM_LABELS) as BKey[]).map((b) => ({
-                Bimestre: BIM_LABELS[b], "Consumo (kWh)": fmt(cons[b], 0), "Factura (MXN)": fmt(billsNowBim[b], 2),
-              }))} />
-            </Card>
-          </TwoCol>
-
-          <TwoCol>
-            <Card title="Factura bimestral con PV (neteo)">
-              <Table rows={(Object.keys(BIM_LABELS) as BKey[]).map((b) => ({
-                Bimestre: BIM_LABELS[b],
-                "Consumo neto (kWh)": fmt(Math.max(cons[b] - genBim[b], 0), 2),
-                "Factura con PV (MXN)": fmt(billsSolarBim[b], 2),
-                "Créditos (kWh)": fmt(creditsTrace[b], 2),
-              }))} />
-            </Card>
-            <Card title="Ahorro por bimestre">
-              <Table rows={(Object.keys(BIM_LABELS) as BKey[]).map((b) => ({
-                Bimestre: BIM_LABELS[b],
-                "Ahorro (MXN)": fmt(savingsBimMXN[b], 2),
-                "% Ahorro": `${fmt(savingsBimPct[b], 1)}%`,
-              }))} />
-            </Card>
-          </TwoCol>
-
-          <Card title="Resumen financiero (ROI)">
-            <Table rows={summary} />
-            <div className="mt-4 overflow-auto">
-              <Table rows={roi.rows.map((r) => ({
-                "Año": r.year, "Flujo (MXN)": fmt(r.cf, 2), "Flujo descontado (MXN)": fmt(r.pv, 2), "Acumulado (MXN)": fmt(r.cum, 2),
-              }))} />
-            </div>
-            <p className="text-xs text-neutral-500 mt-3">
-              Nota: Modelo simplificado. Ajusta los parámetros a tu recibo real (bloques, unitarios y cargos).
-            </p>
-          </Card>
-        </section>
-      </main>
+{/* Outputs */}
+<section className="xl:col-span-2 space-y-6">
+  <Card title="Dimensionamiento del sistema">
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+      <KV k="Paneles" v={String(panels)} />
+      <KV k="Tamaño (kWdc)" v={fmt(systemKW, 2)} />
+      <KV k="Generación anual esperada (kWh)" v={fmt(sumBMap(genBim), 0)} />
+      <KV k="Consumo anual (kWh)" v={fmt(annualLoad, 0)} />
+      <KV k="kWh/kW-año" v={fmt(annualKWhPerKW, 0)} />
+      <KV k="CAPEX (MXN)" v={fmt(capex, 0)} />
     </div>
-  );
+  </Card>
+
+  <TwoCol>
+    <Card title="Generación por bimestre (kWh)">
+      <Table rows={(Object.keys(BIM_LABELS) as BKey[]).map((b) => ({
+        Bimestre: BIM_LABELS[b], "Generación (kWh)": fmt(genBim[b], 2),
+      }))} />
+    </Card>
+    <Card title="Factura bimestral actual (sin PV)">
+      <Table rows={(Object.keys(BIM_LABELS) as BKey[]).map((b) => ({
+        Bimestre: BIM_LABELS[b], "Consumo (kWh)": fmt(cons[b], 0), "Factura (MXN)": fmt(billsNowBim[b], 2),
+      }))} />
+    </Card>
+  </TwoCol>
+
+  <TwoCol>
+    <Card title="Factura bimestral con PV (neteo)">
+      <Table rows={(Object.keys(BIM_LABELS) as BKey[]).map((b) => ({
+        Bimestre: BIM_LABELS[b],
+        "Consumo neto (kWh)": fmt(Math.max(cons[b] - genBim[b], 0), 2),
+        "Factura con PV (MXN)": fmt(billsSolarBim[b], 2),
+        "Créditos (kWh)": fmt(creditsTrace[b], 2),
+      }))} />
+    </Card>
+    <Card title="Ahorro por bimestre">
+      <Table rows={(Object.keys(BIM_LABELS) as BKey[]).map((b) => ({
+        Bimestre: BIM_LABELS[b],
+        "Ahorro (MXN)": fmt(savingsBimMXN[b], 2),
+        "% Ahorro": `${fmt(savingsBimPct[b], 1)}%`,
+      }))} />
+    </Card>
+  </TwoCol>
+
+  <Card title="Resumen financiero (ROI)">
+    <Table rows={summary} />
+    <div className="mt-4 overflow-auto">
+      <Table rows={roi.rows.map((r) => ({
+        "Año": r.year, "Flujo (MXN)": fmt(r.cf, 2), "Flujo descontado (MXN)": fmt(r.pv, 2), "Acumulado (MXN)": fmt(r.cum, 2),
+      }))} />
+    </div>
+    <p className="text-xs text-neutral-500 mt-3">
+      Nota: Modelo simplificado. Ajusta los parámetros a tu recibo real (bloques, unitarios y cargos).
+    </p>
+  </Card>
+</section>
+</main>
+</div>
+);
 }
+
 
 // ----------------------------
 // Mini componentes UI
