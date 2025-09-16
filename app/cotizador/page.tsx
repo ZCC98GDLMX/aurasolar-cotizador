@@ -3,15 +3,21 @@
 
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 // usando ruta relativa (seguro)
 import NumField from "../components/Num";
+import { Help } from "../components/Help";
 
-// o si ya tienes alias configurado en tsconfig
-// import { Num } from "@/components/Num";
+// ========================
+//  PDBT CALIBRADO (GDL)
+// ========================
+// ⚠️ Este bloque DEBE estar FUERA de objetos/funciones (nivel de archivo)
+const PDBT_FIXED_BIMX_MXN = 90.04738842214351;   // cargo fijo bimestral (incluye IVA)
+const PDBT_RATE_MXN_PER_KWH = 5.367731548519526; // $/kWh (incluye IVA)
 
-
-
+function costPDBTCalibratedMXN(kWhBim: number) {
+  return PDBT_FIXED_BIMX_MXN + PDBT_RATE_MXN_PER_KWH * kWhBim;
+}
 
 // ----------------------------
 // Tipos & helpers
@@ -139,7 +145,7 @@ interface TariffParamsGDMTHBim {
   assumed_load_factor: number;
 }
 
-// PDBT desglosado (de tu recibo)
+// PDBT — parámetros desglosados (unitarios base)
 interface TariffParamsPDBTBim {
   suministro_mxn_bim: number;           // cargo fijo por bimestre
   distribucion_mxn_kwh: number;
@@ -148,8 +154,20 @@ interface TariffParamsPDBTBim {
   energia_mxn_kwh: number;
   capacidad_mxn_kwh: number;
   scnmem_mxn_kwh: number;
-  iva: number;                           // 0.16
+  iva: number;                          // normalmente 0.16
 }
+
+// Valores iniciales tomados de tus recibos de ejemplo
+const defaultPDBT: TariffParamsPDBTBim = {
+  suministro_mxn_bim: 74.48,
+  distribucion_mxn_kwh: 0.63477,
+  transmision_mxn_kwh: 0.08231,
+  cenace_mxn_kwh: 0.0296,
+  energia_mxn_kwh: 0.85813,
+  capacidad_mxn_kwh: 0.52917,
+  scnmem_mxn_kwh: 0.0282,
+  iva: 0.16,
+};
 
 type TariffParams =
   | TariffParams01Bim
@@ -192,17 +210,8 @@ const DEFAULT_TARIFFS = {
     assumed_load_factor: 0.4,
   } as TariffParamsGDMTHBim,
 
-  // PDBT — valores iniciales tomados de tus recibos de ejemplo
-  PDBT: {
-    suministro_mxn_bim: 74.48 * 2 / 2, // si tu recibo muestra ~74.48 mensual, en bimestre es ~74.48 (ajústalo si difiere)
-    distribucion_mxn_kwh: 0.63477,
-    transmision_mxn_kwh: 0.08231,
-    cenace_mxn_kwh: 0.0296,
-    energia_mxn_kwh: 0.85813,
-    capacidad_mxn_kwh: 0.52917,
-    scnmem_mxn_kwh: 0.0282,
-    iva: 0.16,
-  } as TariffParamsPDBTBim,
+  // ✅ PDBT desglosado por defecto (para edición en UI)
+  PDBT: defaultPDBT as TariffParamsPDBTBim,
 } as const;
 
 // ----------------------------
@@ -212,7 +221,8 @@ const DEFAULT_TARIFFS = {
 function billCFEBim(
   tariff: Tariff,
   kwhBim: number,
-  params: TariffParams
+  params: TariffParams,
+  usePdbtCal?: boolean
 ): number {
   switch (tariff) {
     case "01": {
@@ -256,27 +266,34 @@ function billCFEBim(
     }
 
     case "PDBT": {
-      const p = params as TariffParamsPDBTBim;
-      // Subtotal sin IVA: suministro fijo + suma de componentes por kWh
-      const unitSum =
-        p.distribucion_mxn_kwh +
-        p.transmision_mxn_kwh +
-        p.cenace_mxn_kwh +
-        p.energia_mxn_kwh +
-        p.capacidad_mxn_kwh +
-        p.scnmem_mxn_kwh;
+      if (usePdbtCal) {
+        // MODO CALIBRADO: total con IVA (no volver a aplicar IVA en otro lado)
+        return round2(costPDBTCalibratedMXN(kwhBim));
+      }
 
-      const subtotal = (p.suministro_mxn_bim || 0) + unitSum * kwhBim;
-      const total = subtotal * (1 + (p.iva || 0));
-      return round2(total);
+      // MODO DESGLOSADO (unitarios base)
+      const p = params as TariffParamsPDBTBim;
+      const subtotal =
+        p.suministro_mxn_bim +
+        (
+          p.distribucion_mxn_kwh +
+          p.transmision_mxn_kwh +
+          p.cenace_mxn_kwh +
+          p.energia_mxn_kwh +
+          p.capacidad_mxn_kwh +
+          p.scnmem_mxn_kwh
+        ) * kwhBim;
+
+      return round2(subtotal * (1 + p.iva));
     }
   }
 }
 
-function billsByBim(consumptionBim: BMap, tariff: Tariff, params: TariffParams): BMap {
+// Agrupar por bimestre
+function billsByBim(consumptionBim: BMap, tariff: Tariff, params: TariffParams, usePdbtCal?: boolean): BMap {
   const out: BMap = { B1:0,B2:0,B3:0,B4:0,B5:0,B6:0 };
   (Object.keys(out) as BKey[]).forEach((b) => {
-    out[b] = billCFEBim(tariff, consumptionBim[b] || 0, params);
+    out[b] = billCFEBim(tariff, consumptionBim[b] || 0, params, usePdbtCal);
   });
   return out;
 }
@@ -318,12 +335,13 @@ function billsWithSolarBim(
   tariff: Tariff,
   params: TariffParams,
   netMetering: boolean,
-  carryover: boolean
+  carryover: boolean,
+  usePdbtCal?: boolean
 ) {
   const { net, creditsTrace } = applyNetMeteringBim(consumptionBim, generationBim, netMetering, carryover);
   const bills: BMap = { B1:0,B2:0,B3:0,B4:0,B5:0,B6:0 };
   (Object.keys(bills) as BKey[]).forEach((b) => {
-    bills[b] = billCFEBim(tariff, net[b], params);
+    bills[b] = billCFEBim(tariff, net[b], params, usePdbtCal);
   });
   return { bills, creditsTrace };
 }
@@ -442,9 +460,12 @@ export default function Page() {
   const [tariff, setTariff] = useState<Tariff>("PDBT");
   const [t01, setT01] = useState(DEFAULT_TARIFFS["01"]);
   const [tDAC, setTDAC] = useState(DEFAULT_TARIFFS.DAC);
-  const [tGDMT, setTGDMT] = useState(DEFAULT_TARIFFS.GDMT);
+  const [tGDMT, setTGDMT] = useState(DEFAULT_TARIFFS.GDMT); // por si copias/pegas
   const [tGDMTH, setTGDMTH] = useState(DEFAULT_TARIFFS.GDMTH);
   const [tPDBT, setTPDBT] = useState(DEFAULT_TARIFFS.PDBT);
+
+  // Toggle UI para PDBT calibrado
+  const [usePdbtCal, setUsePdbtCal] = useState(true);
 
   const params: TariffParams =
     tariff === "01" ? t01 :
@@ -482,13 +503,13 @@ export default function Page() {
 
   // Recibos
   const billsNowBim = useMemo(
-    () => billsByBim(cons, tariff, params),
-    [cons, tariff, params]
+    () => billsByBim(cons, tariff, params, usePdbtCal),
+    [cons, tariff, params, usePdbtCal]
   );
 
   const { bills: billsSolarBim, creditsTrace } = useMemo(
-    () => billsWithSolarBim(cons, genBim, tariff, params, true, true),
-    [cons, genBim, tariff, params]
+    () => billsWithSolarBim(cons, genBim, tariff, params, true, true, usePdbtCal),
+    [cons, genBim, tariff, params, usePdbtCal]
   );
 
   // Ahorros por bimestre
@@ -603,37 +624,37 @@ export default function Page() {
           </Card>
 
           <Card title="Finanzas">
-  <div className="grid grid-cols-2 gap-3">
-    <NumField
-      label="Tasa de descuento"
-      value={discount}
-      setValue={setDiscount}
-      step={0.01}
-      help="Tasa nominal anual (WACC/costo de oportunidad) para traer los flujos a valor presente: Flujo descontado = Flujo / (1+r)^n."
-    />
-    <NumField
-      label="Inflación energética"
-      value={inflation}
-      setValue={setInflation}
-      step={0.01}
-      help="Crecimiento anual esperado de tarifas eléctricas; hace que el ahorro en MXN aumente cada año."
-    />
-    <NumField
-      label="Años de análisis"
-      value={years}
-      setValue={setYears}
-      step={1}
-      help="Horizonte de proyección para NPV/IRR (vida útil considerada)."
-    />
-    <NumField
-      label="Degradación anual"
-      value={degradation}
-      setValue={setDegradation}
-      step={0.001}
-      help="Pérdida anual de capacidad del arreglo: kWhₙ = kWh₁ × (1 − d)^(n−1)."
-    />
-  </div>
-</Card>
+            <div className="grid grid-cols-2 gap-3">
+              <NumField
+                label="Tasa de descuento"
+                value={discount}
+                setValue={setDiscount}
+                step={0.01}
+                help="Tasa nominal anual (WACC/costo de oportunidad) para traer los flujos a valor presente: Flujo descontado = Flujo / (1+r)^n."
+              />
+              <NumField
+                label="Inflación energética"
+                value={inflation}
+                setValue={setInflation}
+                step={0.01}
+                help="Crecimiento anual esperado de tarifas eléctricas; hace que el ahorro en MXN aumente cada año."
+              />
+              <NumField
+                label="Años de análisis"
+                value={years}
+                setValue={setYears}
+                step={1}
+                help="Horizonte de proyección para NPV/IRR (vida útil considerada)."
+              />
+              <NumField
+                label="Degradación anual"
+                value={degradation}
+                setValue={setDegradation}
+                step={0.001}
+                help="Pérdida anual de capacidad del arreglo: kWhₙ = kWh₁ × (1 − d)^(n−1)."
+              />
+            </div>
+          </Card>
 
           <Card title="Tarifa CFE">
             <div className="space-y-3">
@@ -700,6 +721,31 @@ export default function Page() {
               )}
             </div>
           </Card>
+
+          {/* Toggle + tooltip para PDBT */}
+          {tariff === "PDBT" && (
+            <div className="rounded-2xl border p-4 mt-3">
+              <h4 className="mb-2 text-sm font-semibold">Opciones PDBT</h4>
+
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={usePdbtCal}
+                  onChange={(e) => setUsePdbtCal(e.target.checked)}
+                />
+                <span className="font-medium">Usar modo calibrado PDBT</span>
+                <span className="text-xs text-gray-500">(fijo + $/kWh ajustado a tus recibos)</span>
+                <Help text="Al activar este modo, se ignoran los unitarios de arriba y el costo PDBT se calcula como: costo_bimestre = fijo + ($/kWh × kWh). Los valores están calibrados con tus recibos e incluyen IVA." />
+              </label>
+
+              {usePdbtCal && (
+                <p className="text-xs text-gray-500 mt-2">
+                  *Calibrado con recibos CFE (IVA incluido): fijo ≈ ${PDBT_FIXED_BIMX_MXN.toFixed(0)} + {PDBT_RATE_MXN_PER_KWH.toFixed(4)} $/kWh.
+                </p>
+              )}
+            </div>
+          )}
 
           <div className="flex gap-3">
             <button onClick={exportCSV} className="px-4 py-2 rounded-xl bg-black text-white">
