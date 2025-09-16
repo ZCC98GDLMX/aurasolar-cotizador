@@ -461,13 +461,17 @@ export default function Page() {
   );
 
   // Ahorros bimestrales
-  const savingsBimMXN = useMemo(() => {
-    const out: BMap = { B1:0,B2:0,B3:0,B4:0,B5:0,B6:0 };
-    (Object.keys(out) as BKey[]).forEach((b) => {
-      out[b] = round2((billsNowBim[b] || 0) - (billsSolarBim[b] || 0));
-    });
-    return out;
-  }, [billsNowBim, billsSolarBim]);
+  // % de ahorro por bimestre = ahorro / factura actual * 100
+const savingsBimPct = useMemo(() => {
+  const out: BMap = { B1:0,B2:0,B3:0,B4:0,B5:0,B6:0 };
+  (Object.keys(out) as BKey[]).forEach((b) => {
+    const base = billsNowBim[b] || 0;
+    const sav  = savingsBimMXN[b] || 0;
+    out[b] = base > 0 ? round2((sav / base) * 100) : 0;
+  });
+  return out;
+}, [savingsBimMXN, billsNowBim]);
+
 
   const capex = useMemo(() => systemKW * costPerKW, [systemKW, costPerKW]);
 
@@ -504,7 +508,12 @@ export default function Page() {
       Factura_con_PV_MXN: billsSolarBim[b],
       Creditos_kWh: creditsBim[b],
     }));
-    const savingsRows = bimKeys.map((b) => ({ Bimestre: BIM_LABELS[b], Ahorro_MXN: savingsBimMXN[b] }));
+    const savingsRows = bimKeys.map((b) => ({
+  Bimestre: BIM_LABELS[b],
+  Ahorro_MXN: savingsBimMXN[b],
+  Ahorro_pct: savingsBimPct[b],
+}));
+
     const summaryRows = summary.map((r) => ({ Indicador: r.Indicador, Valor: r.Valor }));
     downloadCSV("dimensionador_gdl_bimestral.csv", {
       "Generacion_bimestral": genRows,
@@ -694,11 +703,13 @@ export default function Page() {
           </Card>
 
           <Card title="Ahorro por bimestre">
-            <Table rows={(Object.keys(BIM_LABELS) as BKey[]).map((b) => ({
-              Bimestre: BIM_LABELS[b],
-              "Ahorro (MXN)": fmt(savingsBimMXN[b], 2),
-            }))} />
-          </Card>
+  <Table rows={(Object.keys(BIM_LABELS) as BKey[]).map((b) => ({
+    Bimestre: BIM_LABELS[b],
+    "Ahorro (MXN)": fmt(savingsBimMXN[b], 2),
+    "% Ahorro": `${fmt(savingsBimPct[b], 1)}%`,
+  }))} />
+</Card>
+
 
           <Card title="Resumen financiero (ROI)">
             <Table rows={summary} />
