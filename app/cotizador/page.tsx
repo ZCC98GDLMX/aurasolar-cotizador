@@ -22,10 +22,19 @@ const BIM_LABELS: Record<BKey, string> = {
 };
 
 const MONTHS = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"] as const;
-const BIM_GROUPS: readonly (readonly [string,string])[] = [
+type Month = typeof MONTHS[number];
+
+const MONTH_INDEX: Record<Month, number> = {
+  Ene: 0, Feb: 1, Mar: 2, Abr: 3, May: 4, Jun: 5,
+  Jul: 6, Ago: 7, Sep: 8, Oct: 9, Nov: 10, Dic: 11,
+};
+
+
+const BIM_GROUPS: readonly (readonly [Month, Month])[] = [
   ["Ene","Feb"], ["Mar","Abr"], ["May","Jun"],
-  ["Jul","Ago"], ["Sep","Oct"], ["Nov","Dic"]
+  ["Jul","Ago"], ["Sep","Oct"], ["Nov","Dic"],
 ] as const;
+
 
 function fmt(n: number, digits = 2) {
   if (!isFinite(n)) return "N/D";
@@ -159,14 +168,18 @@ function estimateDemandKWFromBim(kwhBim: number, loadFactor = 0.4, days = 60) {
 function bimestralGeneration(systemKW: number, annualKWhPerKW: number): BMap {
   const monthly = monthlyShape().map((s) => (systemKW * annualKWhPerKW) * (s / 12));
   const bims: BMap = { B1:0,B2:0,B3:0,B4:0,B5:0,B6:0 };
+
   BIM_GROUPS.forEach((pair, i) => {
-    const idxA = MONTHS.indexOf(pair[0] as any);
-    const idxB = MONTHS.indexOf(pair[1] as any);
+    const idxA = MONTH_INDEX[pair[0]];
+    const idxB = MONTH_INDEX[pair[1]];
     const sum = (monthly[idxA] || 0) + (monthly[idxB] || 0);
     bims[`B${i+1}` as BKey] = round2(sum);
   });
+
   return bims;
 }
+
+
 
 // Recibo bimestral por tarifa (sin PV)
 function billCFEBim(tariff: Tariff, kwhBim: number, params: TariffParams): number {
