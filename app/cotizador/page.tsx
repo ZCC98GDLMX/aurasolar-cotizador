@@ -1,4 +1,4 @@
-// app/cotizador/page.tsx — Solar PV Sizer & ROI for Guadalajara, MX
+// app/cotizador/page.tsx — Solar PV Sizer & ROI for Guadalajara, MX (bimestral + PDBT)
 "use client";
 
 import React, { useMemo, useState } from "react";
@@ -7,20 +7,25 @@ import React, { useMemo, useState } from "react";
 // Types & Helpers
 // ----------------------------
 
-type Tariff = "01" | "DAC" | "GDMT" | "GDMTH";
+type Tariff = "01" | "DAC" | "GDMT" | "GDMTH" | "PDBT";
 type MonthlyMap = Record<string, number>;
 type Row = Record<string, string | number>;
 
 const MONTHS = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"] as const;
+const BIMESTERS = [
+  ["Ene","Feb"],
+  ["Mar","Abr"],
+  ["May","Jun"],
+  ["Jul","Ago"],
+  ["Sep","Oct"],
+  ["Nov","Dic"],
+] as const;
 
 function fmt(n: number, digits = 2) {
   if (!isFinite(n)) return "N/D";
   return new Intl.NumberFormat("es-MX", { maximumFractionDigits: digits }).format(n);
 }
-
-function round2(n: number) {
-  return Math.round((n + Number.EPSILON) * 100) / 100;
-}
+function round2(n: number) { return Math.round((n + Number.EPSILON) * 100) / 100; }
 
 function annualPerKwGeneration(psh: number, pr: number, availability: number, extraLosses: number) {
   const base = psh * 365;
@@ -29,14 +34,14 @@ function annualPerKwGeneration(psh: number, pr: number, availability: number, ex
 }
 
 function monthlyShape(amplitude = 0.10) {
-  // Forma estacional tipo coseno con pico ~Junio para GDL
+  // Pico ~Junio (GDL): forma coseno escalada para sumar 12
   const m = Array.from({ length: 12 }, (_, i) => i);
-  const phaseShift = 5; // pico ~Jun (índice 5)
+  const phaseShift = 5;
   let raw = m.map((i) => 1 + amplitude * Math.cos((2 * Math.PI * (i - phaseShift)) / 12));
   const mean = raw.reduce((a, b) => a + b, 0) / raw.length;
   raw = raw.map((x) => x / mean);
   const sum = raw.reduce((a, b) => a + b, 0);
-  return raw.map((x) => (x * 12) / sum); // suma=12
+  return raw.map((x) => (x * 12) / sum);
 }
 
 function sizeSystem(consumption: MonthlyMap, annualKWhPerKW: number, targetCoverage: number, panelWatts: number) {
@@ -70,9 +75,9 @@ interface TariffParams01 {
   fixed_mxn: number;              // cargo fijo mensual
   kwh_basic_limit: number;        // kWh/mes en bloque Básico
   kwh_intermediate_limit: number; // kWh/mes acumulado hasta Intermedio (Básico + Intermedio)
-  mxn_per_kwh_basic: number;         // $/kWh Básico
-  mxn_per_kwh_intermediate: number;  // $/kWh Intermedio
-  mxn_per_kwh_exceed: number;        // $/kWh Excedente
+  mxn_per_kwh_basic: number;
+  mxn_per_kwh_intermediate: number;
+  mxn_per_kwh_exceed: number;
 }
 
 interface TariffParamsDAC { mxn_per_kwh: number; fixed_mxn: number; }
@@ -94,14 +99,27 @@ interface TariffParamsGDMTH {
   assumed_load_factor: number;
 }
 
+// NUEVA: PDBT (energía + demanda + cargo fijo). Sin horarios (no TOU).
+interface TariffParamsPDBT {
+  mxn_per_kwh: number;
+  fixed_mxn: number;
+  mxn_per_kw_demand: number;      // $/kW de demanda medida
+  assumed_load_factor: number;    // para estimar kW a partir de kWh si no hay dato
+}
+
 /** Unión de parámetros válidos por tarifa */
-type TariffParams = TariffParams01 | TariffParamsDAC | TariffParamsGDMT | TariffParamsGDMTH;
+type TariffParams =
+  | TariffParams01
+  | TariffParamsDAC
+  | TariffParamsGDMT
+  | TariffParamsGDMTH
+  | TariffParamsPDBT;
 
 const DEFAULT_TARIFFS = {
   "01": {
     fixed_mxn: 100,
-    kwh_basic_limit: 75,              // ajusta a tu zona (kWh/mes)
-    kwh_intermediate_limit: 140,      // ajusta a tu zona (kWh/mes)
+    kwh_basic_limit: 75,
+    kwh_intermediate_limit: 140,
     mxn_per_kwh_basic: 1.0,
     mxn_per_kwh_intermediate: 1.8,
     mxn_per_kwh_exceed: 3.5,
@@ -119,6 +137,7 @@ const DEFAULT_TARIFFS = {
     split_base: 0.40,
     assumed_load_factor: 0.4,
   } as TariffParamsGDMTH,
+  PDBT: { mxn_per_kwh: 3.8, fixed_mxn: 320, mxn_per_kw_demand: 140, assumed_load_factor: 0.45 } as TariffParamsPDBT,
 };
 
 // ----------------------------
@@ -153,6 +172,13 @@ function billCFE(tariff: Tariff, kwh: number, params: TariffParams): number {
       const p = params as TariffParamsGDMTH;
       const kwhP = kwh * p.split_punta, kwhI = kwh * p.split_intermedia, kwhB = kwh * p.split_base;
       const energy = p.mxn_per_kwh_punta * kwhP + p.mxn_per_kwh_intermedia * kwhI + p.mxn_per_kwh_base * kwhB;
+      const demandKW = estimateDemandKW(kwh, p.assumed_load_factor);
+      const demand = p.mxn_per_kw_demand * demandKW;
+      return round2(energy + demand + (p.fixed_mxn || 0));
+    }
+    case "PDBT": {
+      const p = params as TariffParamsPDBT;
+      const energy = p.mxn_per_kwh * kwh;
       const demandKW = estimateDemandKW(kwh, p.assumed_load_factor);
       const demand = p.mxn_per_kw_demand * demandKW;
       return round2(energy + demand + (p.fixed_mxn || 0));
@@ -222,8 +248,14 @@ function billsWithSolar(
       const demandKW = estimateDemandKW(consumption[m] || 0, p.assumed_load_factor);
       const demand = p.mxn_per_kw_demand * demandKW;
       bills[m] = round2(energy + demand + (p.fixed_mxn || 0));
+    } else if (tariff === "PDBT") {
+      const p = params as TariffParamsPDBT;
+      const energy = p.mxn_per_kwh * kwh;
+      const demandKW = estimateDemandKW(consumption[m] || 0, p.assumed_load_factor);
+      const demand = p.mxn_per_kw_demand * demandKW;
+      bills[m] = round2(energy + demand + (p.fixed_mxn || 0));
     } else {
-      // 01 / DAC: neteo sobre energía
+      // 01 / DAC: neteo simple sobre energía
       bills[m] = billCFE(tariff, kwh, params);
     }
   });
@@ -231,14 +263,27 @@ function billsWithSolar(
 }
 
 // ----------------------------
-// ROI / Finanzas
+// Utilidades bimestrales
 // ----------------------------
+
+function toBimesters(map: MonthlyMap) {
+  // Devuelve {B1..B6} sumando meses de cada bimestre
+  const out: Record<`B${number}`, number> = { B1:0,B2:0,B3:0,B4:0,B5:0,B6:0 };
+  BIMESTERS.forEach((pair, i) => {
+    const sum = (map[pair[0]] || 0) + (map[pair[1]] || 0);
+    out[`B${i+1}` as `B${number}`] = round2(sum);
+  });
+  return out;
+}
 
 function sumMap(map: MonthlyMap) {
   return MONTHS.reduce((acc, m) => acc + (map[m] || 0), 0);
 }
 
-// IRR (Newton + bisección)
+// ----------------------------
+// ROI / Finanzas
+// ----------------------------
+
 function irr(cashflows: number[], guess = 0.1) {
   const npv = (r: number) => cashflows.reduce((acc, cf, i) => acc + cf / Math.pow(1 + r, i), 0);
   const dnpv = (r: number) => cashflows.slice(1).reduce((acc, cf, i) => acc - (i + 1) * cf / Math.pow(1 + r, i + 2), 0);
@@ -354,6 +399,7 @@ export default function Page() {
   const [tDAC, setTDAC] = useState(DEFAULT_TARIFFS.DAC);
   const [tGDMT, setTGDMT] = useState(DEFAULT_TARIFFS.GDMT);
   const [tGDMTH, setTGDMTH] = useState(DEFAULT_TARIFFS.GDMTH);
+  const [tPDBT, setTPDBT] = useState(DEFAULT_TARIFFS.PDBT);
 
   const [targetCoverage, setTargetCoverage] = useState(0.95);
   const [netMetering, setNetMetering] = useState(true);
@@ -362,7 +408,8 @@ export default function Page() {
   const params: TariffParams =
     tariff === "01" ? t01 :
     tariff === "DAC" ? tDAC :
-    tariff === "GDMT" ? tGDMT : tGDMTH;
+    tariff === "GDMT" ? tGDMT :
+    tariff === "GDMTH" ? tGDMTH : tPDBT;
 
   // Cálculos principales
   const annualKWhPerKW = useMemo(() => annualPerKwGeneration(psh, pr, availability, extraLoss), [psh, pr, availability, extraLoss]);
@@ -393,6 +440,18 @@ export default function Page() {
     return out;
   }, [savingsMXN, billsNow]);
 
+  // Bimestral (suma de pares de meses)
+  const genBim = useMemo(() => toBimesters(genMonth), [genMonth]);
+  const billNowBim = useMemo(() => toBimesters(billsNow), [billsNow]);
+  const billSolarBim = useMemo(() => toBimesters(billsSolar), [billsSolar]);
+  const savingsBimMXN = useMemo(() => {
+    const out: Record<`B${number}`, number> = { B1:0,B2:0,B3:0,B4:0,B5:0,B6:0 };
+    (Object.keys(out) as (`B${number}`)[]).forEach((b) => {
+      out[b] = round2((billNowBim[b] || 0) - (billSolarBim[b] || 0));
+    });
+    return out;
+  }, [billNowBim, billSolarBim]);
+
   const capex = useMemo(() => systemKW * costPerKW, [systemKW, costPerKW]);
 
   const roi = useMemo(
@@ -416,6 +475,7 @@ export default function Page() {
   }
 
   function downloadAllAsCSV() {
+    // Mensual
     const genRows = MONTHS.map((m) => ({ Mes: m, Generacion_kWh: genMonth[m] }));
     const billNowRows = MONTHS.map((m) => ({ Mes: m, Consumo_kWh: consumption[m], Factura_actual_MXN: billsNow[m] }));
     const billSolarRows = MONTHS.map((m) => ({
@@ -424,13 +484,25 @@ export default function Page() {
       Factura_con_PV_MXN: billsSolar[m],
       Creditos_kWh: creditsTrace[m]
     }));
-    const savingsRows = MONTHS.map((m) => ({ Mes: m, Ahorro_MXN: savingsMXN[m], Ahorro_pct: savingsPct[m] }));
+    const savingsRows = MONTHS.map((m) => ({ Mes: m, Ahorro_MXN: savingsMXN[m] }));
+
+    // Bimestral
+    const bimNames = ["B1 (Ene–Feb)","B2 (Mar–Abr)","B3 (May–Jun)","B4 (Jul–Ago)","B5 (Sep–Oct)","B6 (Nov–Dic)"];
+    const genBimRows = bimNames.map((n, i) => ({ Bimestre: n, Generacion_kWh: genBim[`B${i+1}` as `B${number}`] }));
+    const billNowBimRows = bimNames.map((n, i) => ({ Bimestre: n, Factura_actual_MXN: billNowBim[`B${i+1}` as `B${number}`] }));
+    const billSolarBimRows = bimNames.map((n, i) => ({ Bimestre: n, Factura_con_PV_MXN: billSolarBim[`B${i+1}` as `B${number}`] }));
+    const savingsBimRows = bimNames.map((n, i) => ({ Bimestre: n, Ahorro_MXN: savingsBimMXN[`B${i+1}` as `B${number}`] }));
+
     const summaryRows = summary.map((r) => ({ Indicador: r.Indicador, Valor: r.Valor }));
     downloadCSV("dimensionador_gdl.csv", {
-      "Generacion": genRows,
-      "Factura_actual": billNowRows,
-      "Factura_con_PV": billSolarRows,
-      "Ahorros": savingsRows,
+      "Generacion_mensual": genRows,
+      "Factura_actual_mensual": billNowRows,
+      "Factura_con_PV_mensual": billSolarRows,
+      "Ahorros_mensual": savingsRows,
+      "Generacion_bimestral": genBimRows,
+      "Factura_actual_bimestral": billNowBimRows,
+      "Factura_con_PV_bimestral": billSolarBimRows,
+      "Ahorros_bimestral": savingsBimRows,
       "Resumen": summaryRows,
       "Flujos": roi.rows.map((r) => ({ Anio: r.year, Flujo: round2(r.cf), Flujo_descontado: round2(r.pv), Acumulado: round2(r.cum) })),
     });
@@ -440,7 +512,7 @@ export default function Page() {
     <div className="min-h-screen bg-neutral-50">
       <header className="px-6 py-5 border-b bg-white sticky top-0 z-10">
         <h1 className="text-2xl font-semibold">Cotizador FV — Guadalajara, Jalisco</h1>
-        <p className="text-sm text-neutral-600">Dimensionamiento, recibos CFE y ROI (tarifas 01, DAC, GDMT, GDMTH). Edita parámetros y obtén resultados al instante.</p>
+        <p className="text-sm text-neutral-600">Dimensionamiento, recibos CFE (mensual y bimestral) y ROI. Tarifas: 01, DAC, GDMT, GDMTH, PDBT.</p>
       </header>
 
       <main className="p-6 grid grid-cols-1 xl:grid-cols-3 gap-6">
@@ -506,7 +578,7 @@ export default function Page() {
           <Card title="Tarifa CFE">
             <div className="space-y-3">
               <div className="flex gap-3 flex-wrap items-center">
-                {(["01","DAC","GDMT","GDMTH"] as Tariff[]).map((t) => (
+                {(["01","DAC","GDMT","GDMTH","PDBT"] as Tariff[]).map((t) => (
                   <button key={t} onClick={() => setTariff(t)} className={`px-3 py-1 rounded-full border ${tariff === t ? "bg-black text-white" : "bg-white"}`}>
                     {t}
                   </button>
@@ -557,6 +629,16 @@ export default function Page() {
                   <Num label="Load factor" value={tGDMTH.assumed_load_factor} setValue={(v)=>setTGDMTH({...tGDMTH, assumed_load_factor:v})} step={0.05} />
                 </div>
               )}
+
+              {/* PDBT */}
+              {tariff === "PDBT" && (
+                <div className="grid grid-cols-2 gap-3">
+                  <Num label="MXN/kWh" value={tPDBT.mxn_per_kwh} setValue={(v)=>setTPDBT({...tPDBT, mxn_per_kwh:v})} step={0.1} />
+                  <Num label="Cargo fijo (MXN)" value={tPDBT.fixed_mxn} setValue={(v)=>setTPDBT({...tPDBT, fixed_mxn:v})} step={10} />
+                  <Num label="MXN/kW demanda" value={tPDBT.mxn_per_kw_demand} setValue={(v)=>setTPDBT({...tPDBT, mxn_per_kw_demand:v})} step={5} />
+                  <Num label="Load factor" value={tPDBT.assumed_load_factor} setValue={(v)=>setTPDBT({...tPDBT, assumed_load_factor:v})} step={0.05} />
+                </div>
+              )}
             </div>
           </Card>
 
@@ -596,13 +678,47 @@ export default function Page() {
             </Card>
           </TwoCol>
 
+          {/* NUEVO: Sección bimestral */}
+          <Card title="Resumen bimestral (Ene–Feb, Mar–Abr, …)">
+            <TwoCol>
+              <Card title="Generación bimestral (kWh)">
+                {(() => {
+                  const labels = ["B1 (Ene–Feb)","B2 (Mar–Abr)","B3 (May–Jun)","B4 (Jul–Ago)","B5 (Sep–Oct)","B6 (Nov–Dic)"];
+                  const rows = labels.map((n, i) => ({ Bimestre: n, "Generación (kWh)": fmt(genBim[`B${i+1}` as `B${number}`], 2) }));
+                  return <Table rows={rows} />;
+                })()}
+              </Card>
+              <Card title="Factura bimestral actual vs. con PV">
+                {(() => {
+                  const labels = ["B1 (Ene–Feb)","B2 (Mar–Abr)","B3 (May–Jun)","B4 (Jul–Ago)","B5 (Sep–Oct)","B6 (Nov–Dic)"];
+                  const rows = labels.map((n, i) => ({
+                    Bimestre: n,
+                    "Factura actual (MXN)": fmt(billNowBim[`B${i+1}` as `B${number}`], 2),
+                    "Factura con PV (MXN)": fmt(billSolarBim[`B${i+1}` as `B${number}`], 2),
+                    "Ahorro (MXN)": fmt(savingsBimMXN[`B${i+1}` as `B${number}`], 2),
+                  }));
+                  return <Table rows={rows} />;
+                })()}
+              </Card>
+            </TwoCol>
+          </Card>
+
           <Card title="Resumen financiero (ROI)">
-            <Table rows={summary} />
+            <Table rows={[
+              { Indicador: "CAPEX (MXN)", Valor: fmt(capex,0) },
+              { Indicador: "Factura anual actual (MXN)", Valor: fmt(sumMap(billsNow),0) },
+              { Indicador: "Factura anual con PV (MXN)", Valor: fmt(sumMap(billsSolar),0) },
+              { Indicador: "Ahorro anual año 1 (MXN)", Valor: fmt(sumMap(savingsMXN),0) },
+              { Indicador: "Payback (años)", Valor: roi.payback ?? "N/D" },
+              { Indicador: `NPV (MXN, ${years} años)`, Valor: fmt(roi.npv,0) },
+              { Indicador: "IRR (anual)", Valor: isFinite(roi.irr) ? `${fmt(roi.irr*100,1)}%` : "N/D" },
+            ]} />
             <div className="mt-4 overflow-auto">
               <Table rows={roi.rows.map((r) => ({ "Año": r.year, "Flujo (MXN)": fmt(r.cf, 2), "Flujo descontado (MXN)": fmt(r.pv, 2), "Acumulado (MXN)": fmt(r.cum, 2) }))} />
             </div>
             <p className="text-xs text-neutral-500 mt-3">
-              Nota: Modelo simplificado. Las tarifas CFE varían por región/temporada y pueden incluir bloques, demanda medida y medición horaria. Ajusta los parámetros a tu recibo.
+              Nota: Modelo simplificado. Las tarifas CFE varían por región/temporada y pueden incluir bloques, demanda y horarios.
+              Ajusta parámetros a tu recibo (especialmente en PDBT/GDMT/GDMTH donde la demanda medida afecta el cargo).
             </p>
           </Card>
         </section>
