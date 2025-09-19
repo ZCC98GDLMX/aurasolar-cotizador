@@ -553,7 +553,12 @@ const [bomWidthMM, setBomWidthMM] = useState<number>(1134);    // ancho panel (p
 const [bomHeightMM, setBomHeightMM] = useState<number>(1722);  // alto panel
 const [bomOrientation, setBomOrientation] = useState<"portrait"|"landscape">("portrait");
 const [bomGapMM, setBomGapMM] = useState<number>(20);          // separación entre paneles
-const [bomPanelsPerRow, setBomPanelsPerRow] = useState<number>(8); // paneles por fila
+
+// ===== Espaciado entre filas (anti-sombra) =====
+const [tiltDeg, setTiltDeg] = useState<number>(20);               // 15–30°
+const [designSunAltDeg, setDesignSunAltDeg] = useState<number>(25); // altitud solar de diseño
+const [spacingExtra, setSpacingExtra] = useState<number>(0.10);      // margen (10%)
+
 
 function resetDefaults() {
   setCons({ B1: 900, B2: 980, B3: 1100, B4: 1200, B5: 1000, B6: 950 });
@@ -689,14 +694,13 @@ function resetDefaults() {
     });
   }
 
-// ===== Cálculos BOM =====
+// ===== Cálculos BOM (1 panel por fila) =====
 const bom = useMemo(() => {
-  const dimAlong = bomOrientation === "portrait" ? bomWidthMM : bomHeightMM; // largo que suma en la fila
-  const panelsPerRow = Math.max(1, Math.floor(bomPanelsPerRow));
+  const dimAlong = bomOrientation === "portrait" ? bomWidthMM : bomHeightMM; // largo útil por panel en la fila
   const totalPanels = Math.max(0, Math.floor(bomPanels));
-  const rows = Math.ceil(totalPanels / panelsPerRow);
+  const rows = totalPanels; // 1 panel por fila
 
-  // Rieles por fila: L = m*dimAlong + (m-1)*gap
+  // Rieles: 2 por panel. Longitud requerida por riel = dimAlong (sin gap, porque es un solo panel por fila)
   const railsInfo = {
     perRowPieces: [] as { n4700: number; n2400: number; splices: number }[],
     total4700: 0,
@@ -705,11 +709,8 @@ const bom = useMemo(() => {
   };
 
   for (let r = 0; r < rows; r++) {
-    const m = r === rows - 1 ? totalPanels - r * panelsPerRow : panelsPerRow;
-    if (m <= 0) continue;
-    const rowLen = m * dimAlong + Math.max(0, m - 1) * bomGapMM;
-
-    // 2 rieles por fila
+    const rowLen = dimAlong; // un panel por fila => sin gaps
+    // 2 rieles por panel
     for (let rail = 0; rail < 2; rail++) {
       const combo = pickRailsForLength(rowLen);
       railsInfo.total4700 += combo.n4700;
@@ -723,10 +724,25 @@ const bom = useMemo(() => {
     }
   }
 
-  const parts = bomAntaiForPanels(totalPanels, panelsPerRow);
+  // Clamps/patas/puesta a tierra (escala con #paneles)
+  const parts = bomAntaiForPanels(totalPanels, 1); // panelesPorFila=1
 
   return { ...railsInfo, ...parts };
-}, [bomPanels, bomWidthMM, bomHeightMM, bomOrientation, bomGapMM, bomPanelsPerRow]);
+}, [bomPanels, bomWidthMM, bomHeightMM, bomOrientation]);
+
+// ===== Cálculo de espaciado mínimo entre filas (mm)
+const rowSpacingMM = useMemo(() => {
+  const Lmm = (bomOrientation === "portrait" ? bomHeightMM : bomWidthMM); // largo en dirección de la pendiente
+  const tilt = (Math.PI / 180) * tiltDeg;
+  const beta = (Math.PI / 180) * designSunAltDeg;
+
+  const projection = Lmm * Math.cos(tilt);           // proyección horizontal del panel
+  const verticalRise = Lmm * Math.sin(tilt);         // altura de la arista posterior
+  const shadow = verticalRise / Math.tan(beta);      // sombra hacia atrás en el plano
+  const pitch = projection + shadow;                 // distancia borde a borde
+
+  return Math.max(0, pitch * (1 + spacingExtra));    // con margen
+}, [bomOrientation, bomHeightMM, bomWidthMM, tiltDeg, designSunAltDeg, spacingExtra]);
 
 
   return (
@@ -993,7 +1009,6 @@ Para obtenerlo desde tu recibo, divide el costo total de cada concepto entre los
         </select>
       </div>
       <Num label="Gap entre paneles (mm)" value={bomGapMM} setValue={setBomGapMM} step={5} />
-      <Num label="Paneles por fila" value={bomPanelsPerRow} setValue={setBomPanelsPerRow} step={1} />
     </div>
 
     <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -1025,6 +1040,29 @@ Para obtenerlo desde tu recibo, divide el costo total de cada concepto entre los
           GroundingLug=1 (N≤4) o 2; EarthingClip=MidClamp; CableClip=N (si N≥6).
         </p>
       </div>
+    </div>
+
+ {/* Espaciado entre filas (anti-sombra) */}
+    <div className="mt-6 border-t pt-4">
+      <h4 className="font-medium mb-3">Espaciado entre filas (anti-sombra)</h4>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <Num label="Ángulo de inclinación (°)" value={tiltDeg} setValue={setTiltDeg} step={1} />
+        <Num label="Altitud solar de diseño (°)" value={designSunAltDeg} setValue={setDesignSunAltDeg} step={1} />
+        <Num label="Margen adicional (0–1)" value={spacingExtra} setValue={setSpacingExtra} step={0.01} />
+      </div>
+
+      <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+        <KV k="Espaciado mínimo (mm)" v={fmt(rowSpacingMM, 0)} />
+        <KV k="Espaciado mínimo (m)" v={fmt(rowSpacingMM / 1000, 2)} />
+        <KV k="Fórmula" v={`pitch = L·cos(tilt) + (L·sin(tilt))/tan(β)`} />
+      </div>
+
+      <p className="text-xs text-neutral-500 mt-2">
+        L es el largo del panel en la dirección de la pendiente (
+        {bomOrientation === "portrait" ? "alto del panel" : "ancho del panel"}).
+        β es la altitud solar de diseño (p. ej. 20°–30° para invierno 9–15 h en GDL).
+        El resultado incluye el margen indicado.
+      </p>
     </div>
 
     <p className="text-xs text-neutral-500 mt-4">
