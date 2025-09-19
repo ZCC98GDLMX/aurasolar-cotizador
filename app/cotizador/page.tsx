@@ -3,7 +3,8 @@
 
 "use client";
 
-import React, { useMemo, useState, useEffect } from "react";
+import React, { useMemo, useState } from "react";
+
 // usando ruta relativa (seguro)
 import NumField from "../components/Num";
 import { Help } from "../components/Help";
@@ -58,9 +59,6 @@ type Month =
   | "Ene" | "Feb" | "Mar" | "Abr" | "May" | "Jun"
   | "Jul" | "Ago" | "Sep" | "Oct" | "Nov" | "Dic";
 
-const MONTHS = [
-  "Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic",
-] as const;
 
 const MONTH_INDEX: Record<Month, number> = {
   Ene:0, Feb:1, Mar:2, Abr:3, May:4, Jun:5,
@@ -122,6 +120,61 @@ function bimestralGeneration(systemKW: number, annualKWhPerKW: number): BMap {
 function sumBMap(map: BMap) {
   return (Object.keys(map) as BKey[]).reduce((acc, k) => acc + (map[k] || 0), 0);
 }
+// ==== Helpers BOM (ANTAI) ====
+
+// Optimizador: para una longitud requerida (mm), encuentra combo de rieles 4700/2400
+// que cumpla >= L con MENOS piezas y MENOR excedente.
+function pickRailsForLength(lengthMM: number) {
+  const L = Math.max(0, Math.round(lengthMM));
+  const R1 = 4700, R2 = 2400;
+  let best = { n4700: 0, n2400: 0, waste: Infinity, pieces: Infinity, total: 0 };
+
+  const max47 = Math.ceil(L / R1) + 2;
+  const max24 = Math.ceil(L / R2) + 3;
+
+  for (let a = 0; a <= max47; a++) {
+    for (let b = 0; b <= max24; b++) {
+      const total = a * R1 + b * R2;
+      if (total < L) continue;
+      const pieces = a + b;
+      const waste = total - L;
+      if (pieces < best.pieces || (pieces === best.pieces && waste < best.waste)) {
+        best = { n4700: a, n2400: b, waste, pieces, total };
+      }
+    }
+  }
+  return best;
+}
+
+// Reglas ANTAI aproximadas y escalables a cualquier N
+function bomAntaiForPanels(totalPanels: number, panelsPerRow: number) {
+  const N = Math.max(0, Math.floor(totalPanels));
+  const nPerRow = Math.max(1, Math.floor(panelsPerRow));
+  const rows = Math.ceil(N / nPerRow);
+
+  const midPerRow = (m: number) => Math.max(0, 2 * m - 2);
+  const legsPerRow = (m: number) => (m <= 4 ? m : Math.max(0, m) + 1); // front = rear
+
+  const endClamp = 4; // como en hoja ANTAI (estructura completa)
+  let midClamp = 0;
+  let frontLeg = 0;
+  let rearLeg = 0;
+
+  for (let r = 0; r < rows; r++) {
+    const m = r === rows - 1 ? N - r * nPerRow : nPerRow;
+    if (m <= 0) continue;
+    midClamp += midPerRow(m);
+    frontLeg += legsPerRow(m);
+    rearLeg += legsPerRow(m);
+  }
+
+  const groundingLug = N <= 4 ? 1 : 2;
+  const earthingClip = midClamp;
+  const cableClip = N >= 6 ? N : 0;
+
+  return { endClamp, midClamp, frontLeg, rearLeg, groundingLug, earthingClip, cableClip, rows };
+}
+
 
 // Estimar demanda (kW) desde kWh Bimestrales (≈ 60 días)
 const estimateDemandKWFromBim = (
@@ -494,6 +547,14 @@ const [tPDBT, setTPDBT] = useLocalStorageState(lsKey("tPDBT"), DEFAULT_TARIFFS.P
 // Toggle calibrado PDBT
 const [usePdbtCal, setUsePdbtCal] = useLocalStorageState(lsKey("usePdbtCal"), true);
 
+// ===== BOM Estructura (ANTAI) — Entradas manuales =====
+const [bomPanels, setBomPanels] = useState<number>(8);         // # paneles
+const [bomWidthMM, setBomWidthMM] = useState<number>(1134);    // ancho panel (portrait)
+const [bomHeightMM, setBomHeightMM] = useState<number>(1722);  // alto panel
+const [bomOrientation, setBomOrientation] = useState<"portrait"|"landscape">("portrait");
+const [bomGapMM, setBomGapMM] = useState<number>(20);          // separación entre paneles
+const [bomPanelsPerRow, setBomPanelsPerRow] = useState<number>(8); // paneles por fila
+
 function resetDefaults() {
   setCons({ B1: 900, B2: 980, B3: 1100, B4: 1200, B5: 1000, B6: 950 });
   setPsh(5.5);
@@ -627,6 +688,46 @@ function resetDefaults() {
       "Flujos": roi.rows.map((r) => ({ Anio: r.year, Flujo: round2(r.cf), Flujo_descontado: round2(r.pv), Acumulado: round2(r.cum) })),
     });
   }
+
+// ===== Cálculos BOM =====
+const bom = useMemo(() => {
+  const dimAlong = bomOrientation === "portrait" ? bomWidthMM : bomHeightMM; // largo que suma en la fila
+  const panelsPerRow = Math.max(1, Math.floor(bomPanelsPerRow));
+  const totalPanels = Math.max(0, Math.floor(bomPanels));
+  const rows = Math.ceil(totalPanels / panelsPerRow);
+
+  // Rieles por fila: L = m*dimAlong + (m-1)*gap
+  const railsInfo = {
+    perRowPieces: [] as { n4700: number; n2400: number; splices: number }[],
+    total4700: 0,
+    total2400: 0,
+    totalSplices: 0,
+  };
+
+  for (let r = 0; r < rows; r++) {
+    const m = r === rows - 1 ? totalPanels - r * panelsPerRow : panelsPerRow;
+    if (m <= 0) continue;
+    const rowLen = m * dimAlong + Math.max(0, m - 1) * bomGapMM;
+
+    // 2 rieles por fila
+    for (let rail = 0; rail < 2; rail++) {
+      const combo = pickRailsForLength(rowLen);
+      railsInfo.total4700 += combo.n4700;
+      railsInfo.total2400 += combo.n2400;
+      railsInfo.totalSplices += Math.max(0, combo.n4700 + combo.n2400 - 1);
+      railsInfo.perRowPieces.push({
+        n4700: combo.n4700,
+        n2400: combo.n2400,
+        splices: Math.max(0, combo.n4700 + combo.n2400 - 1),
+      });
+    }
+  }
+
+  const parts = bomAntaiForPanels(totalPanels, panelsPerRow);
+
+  return { ...railsInfo, ...parts };
+}, [bomPanels, bomWidthMM, bomHeightMM, bomOrientation, bomGapMM, bomPanelsPerRow]);
+
 
   return (
     <div className="min-h-screen bg-neutral-50">
@@ -869,6 +970,66 @@ Para obtenerlo desde tu recibo, divide el costo total de cada concepto entre los
     </div>
     <p className="text-xs text-neutral-500 mt-3">
       Nota: Modelo simplificado. Ajusta los parámetros a tu recibo real (bloques, unitarios y cargos).
+    </p>
+  </Card>
+
+{/* =========================
+      BOM Estructura (ANTAI)
+     ========================= */}
+  <Card title="BOM Estructura (ANTAI Solar)">
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <Num label="# Paneles" value={bomPanels} setValue={setBomPanels} step={1} />
+      <Num label="Ancho panel (mm)" value={bomWidthMM} setValue={setBomWidthMM} step={10} />
+      <Num label="Alto panel (mm)" value={bomHeightMM} setValue={setBomHeightMM} step={10} />
+      <div className="flex flex-col">
+        <label className="text-xs text-neutral-600 mb-1">Orientación</label>
+        <select
+          className="px-3 py-2 rounded-xl border bg-white"
+          value={bomOrientation}
+          onChange={(e)=>setBomOrientation(e.target.value as "portrait"|"landscape")}
+        >
+          <option value="portrait">Portrait (vertical)</option>
+          <option value="landscape">Landscape (horizontal)</option>
+        </select>
+      </div>
+      <Num label="Gap entre paneles (mm)" value={bomGapMM} setValue={setBomGapMM} step={5} />
+      <Num label="Paneles por fila" value={bomPanelsPerRow} setValue={setBomPanelsPerRow} step={1} />
+    </div>
+
+    <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div>
+        <h4 className="font-medium mb-2">Resumen de rieles</h4>
+        <Table rows={[
+          { Componente: "Rail 4700mm", Cantidad: bom.total4700 },
+          { Componente: "Rail 2400mm", Cantidad: bom.total2400 },
+          { Componente: "Rail Splice (unión)", Cantidad: bom.totalSplices },
+        ]} />
+        <p className="text-xs text-neutral-500 mt-2">
+          *Optimizado por fila (2 rieles/fila). Se elige la combinación 4700/2400 con menos piezas y menor excedente.
+        </p>
+      </div>
+
+      <div>
+        <h4 className="font-medium mb-2">Abrazaderas, patas y puesta a tierra</h4>
+        <Table rows={[
+          { Componente: "End Clamp", Cantidad: bom.endClamp },
+          { Componente: "Mid Clamp", Cantidad: bom.midClamp },
+          { Componente: "Adjustable front leg", Cantidad: bom.frontLeg },
+          { Componente: "Adjustable rear leg", Cantidad: bom.rearLeg },
+          { Componente: "Grounding Lug", Cantidad: bom.groundingLug },
+          { Componente: "Earthing Clip", Cantidad: bom.earthingClip },
+          { Componente: "Cable Clip", Cantidad: bom.cableClip },
+        ]} />
+        <p className="text-xs text-neutral-500 mt-2">
+          Reglas ANTAI aproximadas: EndClamp=4; MidClamp=2·N−2; Front/RearLeg=N (≤4) o N+1 (≥6);
+          GroundingLug=1 (N≤4) o 2; EarthingClip=MidClamp; CableClip=N (si N≥6).
+        </p>
+      </div>
+    </div>
+
+    <p className="text-xs text-neutral-500 mt-4">
+      Nota: Este BOM es independiente del cotizador. Usa tus dimensiones y distribución por filas;
+      puede diferir de la tabla ANTAI 4–12 si la geometría varía.
     </p>
   </Card>
 </section>
