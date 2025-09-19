@@ -736,19 +736,23 @@ const bom = useMemo(() => {
 }, [bomPanels, bomWidthMM, bomHeightMM, bomOrientation, bomGapMM]);
 
 
-// ===== Cálculo de espaciado mínimo entre filas (mm)
+// ===== Cálculo de espaciado mínimo entre filas (mm) — LE-LE (leading-edge a leading-edge)
 const rowSpacingMM = useMemo(() => {
-  const Lmm = (bomOrientation === "portrait" ? bomHeightMM : bomWidthMM); // largo en dirección de la pendiente
-  const tilt = (Math.PI / 180) * tiltDeg;
-  const beta = (Math.PI / 180) * designSunAltDeg;
+  // L es el largo del panel en la dirección de la pendiente:
+  // - portrait  -> alto del panel
+  // - landscape -> ancho del panel
+  const Lmm = (bomOrientation === "portrait" ? bomHeightMM : bomWidthMM);
 
-  const projection = Lmm * Math.cos(tilt);           // proyección horizontal del panel
-  const verticalRise = Lmm * Math.sin(tilt);         // altura de la arista posterior
-  const shadow = verticalRise / Math.tan(beta);      // sombra hacia atrás en el plano
-  const pitch = projection + shadow;                 // distancia borde a borde
+  const tilt = (Math.PI / 180) * tiltDeg;             // inclinación en rad
+  const beta = (Math.PI / 180) * designSunAltDeg;     // altitud solar de diseño en rad
 
-  return Math.max(0, pitch * (1 + spacingExtra));    // con margen
+  const verticalRise = Lmm * Math.sin(tilt);          // elevación del borde trasero
+  const shadow = verticalRise / Math.tan(beta);       // longitud de sombra proyectada
+
+  // LE-LE: solo la sombra (sin sumar la proyección del panel), con margen
+  return Math.max(0, shadow * (1 + spacingExtra));
 }, [bomOrientation, bomHeightMM, bomWidthMM, tiltDeg, designSunAltDeg, spacingExtra]);
+
 
 
   return (
