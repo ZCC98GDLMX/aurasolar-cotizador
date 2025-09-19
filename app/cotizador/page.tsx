@@ -124,56 +124,87 @@ function sumBMap(map: BMap) {
 
 // Optimizador: para una longitud requerida (mm), encuentra combo de rieles 4700/2400
 // que cumpla >= L con MENOS piezas y MENOR excedente.
-function pickRailsForLength(lengthMM: number) {
-  const L = Math.max(0, Math.round(lengthMM));
-  const R1 = 4700, R2 = 2400;
-  let best = { n4700: 0, n2400: 0, waste: Infinity, pieces: Infinity, total: 0 };
-
-  const max47 = Math.ceil(L / R1) + 2;
-  const max24 = Math.ceil(L / R2) + 3;
-
-  for (let a = 0; a <= max47; a++) {
-    for (let b = 0; b <= max24; b++) {
-      const total = a * R1 + b * R2;
-      if (total < L) continue;
-      const pieces = a + b;
-      const waste = total - L;
-      if (pieces < best.pieces || (pieces === best.pieces && waste < best.waste)) {
-        best = { n4700: a, n2400: b, waste, pieces, total };
+function pickRailsForLength(lengthMM: number, minPiecesPerRail = 2) {
+  let best: { n4700: number; n2400: number; pieces: number; waste: number } | null = null;
+  for (let n4700 = 0; n4700 <= 10; n4700++) {
+    for (let n2400 = 0; n2400 <= 10; n2400++) {
+      const pieces = n4700 + n2400;
+      if (pieces < minPiecesPerRail) continue;
+      const total = 4700 * n4700 + 2400 * n2400;
+      if (total < lengthMM) continue;
+      const waste = total - lengthMM;
+      if (
+        !best ||
+        pieces < best.pieces ||
+        (pieces === best.pieces && waste < best.waste)
+      ) {
+        best = { n4700, n2400, pieces, waste };
       }
     }
   }
-  return best;
+  if (!best) {
+    const n4700 = Math.ceil(lengthMM / 4700);
+    return { n4700, n2400: 0 };
+  }
+  return { n4700: best.n4700, n2400: best.n2400 };
 }
 
 // Reglas ANTAI aproximadas y escalables a cualquier N
-function bomAntaiForPanels(totalPanels: number, panelsPerRow: number) {
-  const N = Math.max(0, Math.floor(totalPanels));
-  const nPerRow = Math.max(1, Math.floor(panelsPerRow));
-  const rows = Math.ceil(N / nPerRow);
-
-  const midPerRow = (m: number) => Math.max(0, 2 * m - 2);
-  const legsPerRow = (m: number) => (m <= 4 ? m : Math.max(0, m) + 1); // front = rear
-
-  const endClamp = 4; // como en hoja ANTAI (estructura completa)
-  let midClamp = 0;
-  let frontLeg = 0;
-  let rearLeg = 0;
-
-  for (let r = 0; r < rows; r++) {
-    const m = r === rows - 1 ? N - r * nPerRow : nPerRow;
-    if (m <= 0) continue;
-    midClamp += midPerRow(m);
-    frontLeg += legsPerRow(m);
-    rearLeg += legsPerRow(m);
+function bomAntaiForPanelsSingleRow(
+  N: number,
+  unitAlongRowMM: number,
+  gapMM: number
+) {
+  const totalPanels = Math.max(0, Math.floor(N));
+  if (totalPanels === 0) {
+    return {
+      total4700: 0,
+      total2400: 0,
+      totalSplices: 0,
+      endClamp: 0,
+      midClamp: 0,
+      frontLeg: 0,
+      rearLeg: 0,
+      groundingLug: 0,
+      earthingClip: 0,
+      cableClip: 0,
+    };
   }
 
-  const groundingLug = N <= 4 ? 1 : 2;
-  const earthingClip = midClamp;
-  const cableClip = N >= 6 ? N : 0;
+  const rowLen =
+    totalPanels * unitAlongRowMM + Math.max(0, totalPanels - 1) * Math.max(0, gapMM);
 
-  return { endClamp, midClamp, frontLeg, rearLeg, groundingLug, earthingClip, cableClip, rows };
+  const combo = pickRailsForLength(rowLen, 2);
+  const piecesPerRail = combo.n4700 + combo.n2400;
+
+  const total4700 = combo.n4700 * 2;
+  const total2400 = combo.n2400 * 2;
+  const totalSplices = Math.max(0, piecesPerRail - 1) * 2;
+
+  const endClamp = 4;
+  const midClamp = totalPanels >= 2 ? 2 * (totalPanels - 1) : 0;
+  const legs = totalPanels <= 4 ? totalPanels : totalPanels + 1;
+  const frontLeg = legs;
+  const rearLeg = legs;
+
+  const groundingLug = totalPanels <= 4 ? 1 : 2;
+  const earthingClip = midClamp;
+  const cableClip = totalPanels >= 6 ? totalPanels : 0;
+
+  return {
+    total4700,
+    total2400,
+    totalSplices,
+    endClamp,
+    midClamp,
+    frontLeg,
+    rearLeg,
+    groundingLug,
+    earthingClip,
+    cableClip,
+  };
 }
+
 
 
 // Estimar demanda (kW) desde kWh Bimestrales (≈ 60 días)
@@ -694,41 +725,16 @@ function resetDefaults() {
     });
   }
 
-// ===== Cálculos BOM (1 panel por fila) =====
+// ===== Cálculos BOM (una sola fila con N paneles) =====
 const bom = useMemo(() => {
-  const dimAlong = bomOrientation === "portrait" ? bomWidthMM : bomHeightMM; // largo útil por panel en la fila
-  const totalPanels = Math.max(0, Math.floor(bomPanels));
-  const rows = totalPanels; // 1 panel por fila
+  const N = Math.max(0, Math.floor(bomPanels));
+  // La fila corre a lo largo del "ancho" en portrait, o del "alto" en landscape
+  const unitAlongRow = bomOrientation === "portrait" ? bomWidthMM : bomHeightMM;
 
-  // Rieles: 2 por panel. Longitud requerida por riel = dimAlong (sin gap, porque es un solo panel por fila)
-  const railsInfo = {
-    perRowPieces: [] as { n4700: number; n2400: number; splices: number }[],
-    total4700: 0,
-    total2400: 0,
-    totalSplices: 0,
-  };
+  // Nuevo cálculo alineado con ANTAI: 2 rieles para TODA la fila + splices
+  return bomAntaiForPanelsSingleRow(N, unitAlongRow, bomGapMM);
+}, [bomPanels, bomWidthMM, bomHeightMM, bomOrientation, bomGapMM]);
 
-  for (let r = 0; r < rows; r++) {
-    const rowLen = dimAlong; // un panel por fila => sin gaps
-    // 2 rieles por panel
-    for (let rail = 0; rail < 2; rail++) {
-      const combo = pickRailsForLength(rowLen);
-      railsInfo.total4700 += combo.n4700;
-      railsInfo.total2400 += combo.n2400;
-      railsInfo.totalSplices += Math.max(0, combo.n4700 + combo.n2400 - 1);
-      railsInfo.perRowPieces.push({
-        n4700: combo.n4700,
-        n2400: combo.n2400,
-        splices: Math.max(0, combo.n4700 + combo.n2400 - 1),
-      });
-    }
-  }
-
-  // Clamps/patas/puesta a tierra (escala con #paneles)
-  const parts = bomAntaiForPanels(totalPanels, 1); // panelesPorFila=1
-
-  return { ...railsInfo, ...parts };
-}, [bomPanels, bomWidthMM, bomHeightMM, bomOrientation]);
 
 // ===== Cálculo de espaciado mínimo entre filas (mm)
 const rowSpacingMM = useMemo(() => {
@@ -1020,8 +1026,9 @@ Para obtenerlo desde tu recibo, divide el costo total de cada concepto entre los
           { Componente: "Rail Splice (unión)", Cantidad: bom.totalSplices },
         ]} />
         <p className="text-xs text-neutral-500 mt-2">
-          *Optimizado por fila (2 rieles/fila). Se elige la combinación 4700/2400 con menos piezas y menor excedente.
-        </p>
+  *Optimizado por arreglo (1 fila con N paneles y 2 rieles). Se elige por riel la combinación 4700/2400 que
+  cubra la longitud total con el menor # de piezas y mínimo sobrante; los splices se calculan como (piezas−1)×2.
+</p>
       </div>
 
       <div>
