@@ -1709,16 +1709,21 @@ function KV({ k, v }: { k: string; v: React.ReactNode }) {
 }
 
 function Table({ rows }: { rows: Row[] }) {
-  const cols = rows.length ? Object.keys(rows[0]) : [];
+  // 🔧 antes: solo keys del primer row
+  // const cols = rows.length ? Object.keys(rows[0]) : [];
+
+  // ✅ ahora: unión de claves de todos los rows (en el orden de aparición)
+  const cols = Array.from(
+    new Set(rows.flatMap((r) => Object.keys(r)))
+  );
+
   return (
     <div className="overflow-auto">
       <table className="w-full text-sm">
         <thead>
           <tr className="text-left border-b bg-neutral-50">
             {cols.map((c) => (
-              <th key={c} className="px-2 py-2 whitespace-nowrap">
-                {c}
-              </th>
+              <th key={c} className="px-2 py-2 whitespace-nowrap">{c}</th>
             ))}
           </tr>
         </thead>
@@ -1727,7 +1732,7 @@ function Table({ rows }: { rows: Row[] }) {
             <tr key={i} className="border-b last:border-0">
               {cols.map((c) => (
                 <td key={c} className="px-2 py-2 whitespace-nowrap">
-                  {r[c] as React.ReactNode}
+                  {r[c] as React.ReactNode ?? ""}
                 </td>
               ))}
             </tr>
@@ -1737,6 +1742,7 @@ function Table({ rows }: { rows: Row[] }) {
     </div>
   );
 }
+
 
 function Num({
   label,
