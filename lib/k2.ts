@@ -145,7 +145,7 @@ export function k2Compute(opts: {
   const endClamp = 4 * rows;
   const midClamp = n >= 2 ? rows * 2 * (n - 1) : 0;
   const lFeet = rows * supportsPerRow * 2;          // 2 patas por apoyo (frontal+trasera)
-  const tiltConnectors = rows * supportsPerRow * 2; // 2 por apoyo
+const tiltConnectors = rows * supportsPerRow;
   const climbers = eoRailsPerRow * rows * supportsPerRow; // un climber por cruce riel/apoyo
   const groundingLug = n <= 4 ? rows * 1 : rows * 2;
   const earthingClip = midClamp;

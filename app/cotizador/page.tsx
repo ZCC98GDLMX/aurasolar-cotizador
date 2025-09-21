@@ -900,33 +900,31 @@ export default function Page() {
   );
 
   // ===== K2 – Cálculo BOM (Tilt Up 1 fila / Multi-Row 2 filas) =====
-  const k2Bom = useMemo(
-    () =>
-      k2Compute({
-        N: k2Panels,
-        panelWMM: k2WidthMM,
-        panelHMM: k2HeightMM,
-        orientation: k2Orientation,
-        gapMM: k2GapMM,
-        tiltDeg: k2TiltDeg,
-        mode: k2Mode,
-        autoSpanEw: k2AutoSpan,
-        spanEwMM: Math.round(k2SpanEwM * 1000), // m -> mm
-        nsRailSpacingPresetMM: k2NsPresetMM,
-      }),
-    [
-      k2Panels,
-      k2WidthMM,
-      k2HeightMM,
-      k2Orientation,
-      k2GapMM,
-      k2TiltDeg,
-      k2Mode,
-      k2AutoSpan,
-      k2SpanEwM,
-      k2NsPresetMM,
-    ]
-  );
+const k2Bom = useMemo(() => {
+  return k2Compute({
+    N: k2Panels,
+    panelWMM: k2WidthMM,
+    panelHMM: k2HeightMM,
+    orientation: k2Orientation,      // "portrait" | "landscape"
+    gapMM: k2GapMM,
+    tiltDeg: k2TiltDeg,
+    mode: k2Mode,                    // "tiltup_1row" | "multirow_2rows"
+    autoSpanEw: k2AutoSpan,
+    spanEwMM: Math.round(k2SpanEwM * 1000),  // si tu input está en metros → pásalo a mm
+    nsRailSpacingPresetMM: k2NsPresetMM,     // opcional
+  });
+}, [
+  k2Panels,
+  k2WidthMM,
+  k2HeightMM,
+  k2Orientation,
+  k2GapMM,
+  k2TiltDeg,
+  k2Mode,
+  k2AutoSpan,
+  k2SpanEwM,
+  k2NsPresetMM,
+]);
 
   // =============================
   // JSX
@@ -1619,30 +1617,18 @@ Para obtenerlo desde tu recibo, divide el costo total de cada concepto entre los
             {/* Rieles y barras */}
             <TwoCol>
               <Card title="Rieles (longitud total)">
-                <Table
-                  rows={[
-                    {
-                      Concepto: "Rieles E-O (2 por fila)",
-                      "Longitud total (m)": fmt(k2Bom.totalEORailsMM / 1000, 2),
-                    },
-                    {
-                      Concepto: "Rieles N-S (2 por fila)",
-                      "Longitud total (m)": fmt(k2Bom.totalNSRailsMM / 1000, 2),
-                    },
-                    {
-                      Concepto: "Riel auxiliar patas",
-                      "Longitud total (m)": fmt(k2Bom.totalAuxLegRailsMM / 1000, 2),
-                    },
-                    { Concepto: "Barras 4.8 m requeridas", Cantidad: k2Bom.bars48m },
-                    { Concepto: "Empalmes (splices) estimados", Cantidad: k2Bom.splices },
-                  ]}
-                />
-                <p className="text-xs text-neutral-500 mt-2">
-                  Aproximación: riel CrossRail E-O a lo largo de la fila (2 por fila);
-                  rieles N-S delanteros y traseros con separación c-a-c dada; barras
-                  comerciales de 4.8&nbsp;m.
-                </p>
-              </Card>
+  <Table rows={[
+    { Concepto: "Rieles E–O (2 por fila)", "Longitud total (m)": (k2Bom.totalEORailsMM/1000).toFixed(2) },
+    { Concepto: "Rieles N–S (2 por fila)", "Longitud total (m)": (k2Bom.totalNSRailsMM/1000).toFixed(2) },
+    { Concepto: "Riel auxiliar patas",     "Longitud total (m)": (k2Bom.totalAuxLegRailsMM/1000).toFixed(2) },
+    { Concepto: "Barras 4.8 m requeridas", Cantidad: k2Bom.bars48m },
+    { Concepto: "Empalmes (splices) estimados", Cantidad: k2Bom.splices },
+  ]}/>
+  <p className="text-xs text-neutral-500 mt-2">
+    Aproximación: riel CrossRail E–O a lo largo de la fila (2 por fila); rieles N–S delanteros y
+    traseros con separación c–a–c; barras comerciales de 4.8 m.
+  </p>
+</Card>
 
               <Card title="Piezas (aprox)">
                 <Table
