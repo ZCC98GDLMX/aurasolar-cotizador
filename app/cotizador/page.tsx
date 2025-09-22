@@ -1,5 +1,6 @@
 // app/cotizador/page.tsx
-// Cotizador FV — Bimestral (GDL) con PDBT desglosado, % ahorro por bimestre y cálculos de cableado (NOM-001-SEDE-2012)
+// Cotizador FV — Bimestral (GDL) con PDBT desglosado, % ahorro por bimestre
+// y cálculos de cableado (NOM-001-SEDE-2012)
 
 "use client";
 
@@ -18,7 +19,8 @@ import type { CopperAwg } from "../../lib/cabling";
 import {
   pvDcMaxCurrentA,
   requiredConductorAmpacityA,
-  ocpdRecommendedA,
+  ocpdRecommendedA, // (se usa para AC)
+  ocpdRecommendedRoundedA, // (nuevo) redondeo comercial para DC
   inverterAcSizing,
   microBranchSizing,
   checkStringVocCold,
@@ -26,6 +28,7 @@ import {
   selectCopperAwg,
   voltageDropDCDC,
   voltageDropAC1P,
+  voltageDropAC3P,
   vdExceeds,
 } from "../../lib/cabling";
 
@@ -91,18 +94,36 @@ type Month =
   | "Dic";
 
 const MONTH_INDEX: Record<Month, number> = {
-  Ene: 0, Feb: 1, Mar: 2, Abr: 3, May: 4, Jun: 5,
-  Jul: 6, Ago: 7, Sep: 8, Oct: 9, Nov: 10, Dic: 11,
+  Ene: 0,
+  Feb: 1,
+  Mar: 2,
+  Abr: 3,
+  May: 4,
+  Jun: 5,
+  Jul: 6,
+  Ago: 7,
+  Sep: 8,
+  Oct: 9,
+  Nov: 10,
+  Dic: 11,
 };
 
 const BIM_GROUPS: readonly (readonly [Month, Month])[] = [
-  ["Ene", "Feb"], ["Mar", "Abr"], ["May", "Jun"],
-  ["Jul", "Ago"], ["Sep", "Oct"], ["Nov", "Dic"],
+  ["Ene", "Feb"],
+  ["Mar", "Abr"],
+  ["May", "Jun"],
+  ["Jul", "Ago"],
+  ["Sep", "Oct"],
+  ["Nov", "Dic"],
 ] as const;
 
 const BIM_LABELS: Record<BKey, string> = {
-  B1: "Ene–Feb", B2: "Mar–Abr", B3: "May–Jun",
-  B4: "Jul–Ago", B5: "Sep–Oct", B6: "Nov–Dic",
+  B1: "Ene–Feb",
+  B2: "Mar–Abr",
+  B3: "May–Jun",
+  B4: "Jul–Ago",
+  B5: "Sep–Oct",
+  B6: "Nov–Dic",
 };
 
 function round2(n: number) {
@@ -117,7 +138,10 @@ function fmt(n: number | string, digits = 2) {
 
 // PR/producción
 function annualPerKwGeneration(
-  psh: number, pr: number, availability: number, extraLosses: number
+  psh: number,
+  pr: number,
+  availability: number,
+  extraLosses: number
 ) {
   const base = psh * 365; // kWh/kW-año ideal
   const eff = pr * availability * (1 - extraLosses);
@@ -128,7 +152,9 @@ function annualPerKwGeneration(
 function monthlyShape(amplitude = 0.1) {
   const m = Array.from({ length: 12 }, (_, i) => i);
   const phaseShift = 5; // pico ~Jun
-  let raw = m.map((i) => 1 + amplitude * Math.cos((2 * Math.PI * (i - phaseShift)) / 12));
+  let raw = m.map(
+    (i) => 1 + amplitude * Math.cos((2 * Math.PI * (i - phaseShift)) / 12)
+  );
   const mean = raw.reduce((a, b) => a + b, 0) / raw.length;
   raw = raw.map((x) => x / mean);
   const sum = raw.reduce((a, b) => a + b, 0);
@@ -136,24 +162,31 @@ function monthlyShape(amplitude = 0.1) {
 }
 
 function bimestralGeneration(systemKW: number, annualKWhPerKW: number): BMap {
-  const monthly = monthlyShape().map((s) => (systemKW * annualKWhPerKW) * (s / 12));
-  const out: BMap = { B1:0,B2:0,B3:0,B4:0,B5:0,B6:0 };
+  const monthly = monthlyShape().map(
+    (s) => systemKW * annualKWhPerKW * (s / 12)
+  );
+  const out: BMap = { B1: 0, B2: 0, B3: 0, B4: 0, B5: 0, B6: 0 };
   BIM_GROUPS.forEach((pair, i) => {
     const a = MONTH_INDEX[pair[0]];
     const b = MONTH_INDEX[pair[1]];
     const sum = (monthly[a] || 0) + (monthly[b] || 0);
-    out[`B${i+1}` as BKey] = round2(sum);
+    out[`B${i + 1}` as BKey] = round2(sum);
   });
   return out;
 }
 
 function sumBMap(map: BMap) {
-  return (Object.keys(map) as BKey[]).reduce((acc, k) => acc + (map[k] || 0), 0);
+  return (Object.keys(map) as BKey[]).reduce(
+    (acc, k) => acc + (map[k] || 0),
+    0
+  );
 }
 
 // Estimar demanda (kW) desde kWh Bimestrales (≈ 60 días)
 const estimateDemandKWFromBim = (
-  kwhBim: number, loadFactor: number = 0.4, days: number = 60
+  kwhBim: number,
+  loadFactor: number = 0.4,
+  days: number = 60
 ): number => {
   const kwAvg = kwhBim / (days * 24);
   return kwAvg / Math.max(loadFactor, 1e-6);
@@ -263,7 +296,10 @@ const DEFAULT_TARIFFS = {
 // Facturación (Bimestral)
 // ----------------------------
 function billCFEBim(
-  tariff: Tariff, kwhBim: number, params: TariffParams, usePdbtCal?: boolean
+  tariff: Tariff,
+  kwhBim: number,
+  params: TariffParams,
+  usePdbtCal?: boolean
 ): number {
   switch (tariff) {
     case "01": {
@@ -286,7 +322,10 @@ function billCFEBim(
     case "GDMT": {
       const p = params as TariffParamsGDMTBim;
       const energy = p.mxn_per_kwh * kwhBim;
-      const demandKW_month = estimateDemandKWFromBim(kwhBim, p.assumed_load_factor);
+      const demandKW_month = estimateDemandKWFromBim(
+        kwhBim,
+        p.assumed_load_factor
+      );
       const demandBim = p.mxn_per_kw_demand_month * demandKW_month * 2;
       return round2(energy + demandBim + (p.fixed_mxn_bim || 0));
     }
@@ -299,7 +338,10 @@ function billCFEBim(
         p.mxn_per_kwh_punta * kwhP +
         p.mxn_per_kwh_intermedia * kwhI +
         p.mxn_per_kwh_base * kwhB;
-      const demandKW_month = estimateDemandKWFromBim(kwhBim, p.assumed_load_factor);
+      const demandKW_month = estimateDemandKWFromBim(
+        kwhBim,
+        p.assumed_load_factor
+      );
       const demandBim = p.mxn_per_kw_demand_month * demandKW_month * 2;
       return round2(energy + demandBim + (p.fixed_mxn_bim || 0));
     }
@@ -308,23 +350,25 @@ function billCFEBim(
       const p = params as TariffParamsPDBTBim;
       const subtotal =
         p.suministro_mxn_bim +
-        (
-          p.distribucion_mxn_kwh +
+        (p.distribucion_mxn_kwh +
           p.transmision_mxn_kwh +
           p.cenace_mxn_kwh +
           p.energia_mxn_kwh +
           p.capacidad_mxn_kwh +
-          p.scnmem_mxn_kwh
-        ) * kwhBim;
+          p.scnmem_mxn_kwh) *
+          kwhBim;
       return round2(subtotal * (1 + p.iva));
     }
   }
 }
 
 function billsByBim(
-  consumptionBim: BMap, tariff: Tariff, params: TariffParams, usePdbtCal?: boolean
+  consumptionBim: BMap,
+  tariff: Tariff,
+  params: TariffParams,
+  usePdbtCal?: boolean
 ): BMap {
-  const out: BMap = { B1:0,B2:0,B3:0,B4:0,B5:0,B6:0 };
+  const out: BMap = { B1: 0, B2: 0, B3: 0, B4: 0, B5: 0, B6: 0 };
   (Object.keys(out) as BKey[]).forEach((b) => {
     out[b] = billCFEBim(tariff, consumptionBim[b] || 0, params, usePdbtCal);
   });
@@ -333,10 +377,13 @@ function billsByBim(
 
 // Neteo simplificado por bimestre con opción a créditos acumulables
 function applyNetMeteringBim(
-  consumptionBim: BMap, generationBim: BMap, netMetering: boolean, carryover: boolean
+  consumptionBim: BMap,
+  generationBim: BMap,
+  netMetering: boolean,
+  carryover: boolean
 ): { net: BMap; creditsTrace: BMap } {
-  const net: BMap = { B1:0,B2:0,B3:0,B4:0,B5:0,B6:0 };
-  const creditsTrace: BMap = { B1:0,B2:0,B3:0,B4:0,B5:0,B6:0 };
+  const net: BMap = { B1: 0, B2: 0, B3: 0, B4: 0, B5: 0, B6: 0 };
+  const creditsTrace: BMap = { B1: 0, B2: 0, B3: 0, B4: 0, B5: 0, B6: 0 };
   let credit = 0;
   (Object.keys(net) as BKey[]).forEach((b) => {
     const cons = consumptionBim[b] || 0;
@@ -347,19 +394,34 @@ function applyNetMeteringBim(
       return;
     }
     const available = cons - gen - (carryover ? credit : 0);
-    if (available >= 0) { net[b] = available; credit = 0; }
-    else { net[b] = 0; credit = Math.abs(available); }
+    if (available >= 0) {
+      net[b] = available;
+      credit = 0;
+    } else {
+      net[b] = 0;
+      credit = Math.abs(available);
+    }
     creditsTrace[b] = round2(credit);
   });
   return { net, creditsTrace };
 }
 
 function billsWithSolarBim(
-  consumptionBim: BMap, generationBim: BMap, tariff: Tariff, params: TariffParams,
-  netMetering: boolean, carryover: boolean, usePdbtCal?: boolean
+  consumptionBim: BMap,
+  generationBim: BMap,
+  tariff: Tariff,
+  params: TariffParams,
+  netMetering: boolean,
+  carryover: boolean,
+  usePdbtCal?: boolean
 ) {
-  const { net, creditsTrace } = applyNetMeteringBim(consumptionBim, generationBim, netMetering, carryover);
-  const bills: BMap = { B1:0,B2:0,B3:0,B4:0,B5:0,B6:0 };
+  const { net, creditsTrace } = applyNetMeteringBim(
+    consumptionBim,
+    generationBim,
+    netMetering,
+    carryover
+  );
+  const bills: BMap = { B1: 0, B2: 0, B3: 0, B4: 0, B5: 0, B6: 0 };
   (Object.keys(bills) as BKey[]).forEach((b) => {
     bills[b] = billCFEBim(tariff, net[b], params, usePdbtCal);
   });
@@ -368,8 +430,15 @@ function billsWithSolarBim(
 
 // ROI simple
 function irr(cashflows: number[], guess = 0.1) {
-  const npv = (r: number) => cashflows.reduce((acc, cf, i) => acc + cf / Math.pow(1 + r, i), 0);
-  const dnpv = (r: number) => cashflows.slice(1).reduce((acc, cf, i) => acc - (i + 1) * cf / Math.pow(1 + r, i + 2), 0);
+  const npv = (r: number) =>
+    cashflows.reduce((acc, cf, i) => acc + cf / Math.pow(1 + r, i), 0);
+  const dnpv = (r: number) =>
+    cashflows
+      .slice(1)
+      .reduce(
+        (acc, cf, i) => acc - (i + 1) * cf / Math.pow(1 + r, i + 2),
+        0
+      );
   let r = guess;
   for (let i = 0; i < 50; i++) {
     const f = npv(r);
@@ -379,20 +448,28 @@ function irr(cashflows: number[], guess = 0.1) {
     r = r - f / df;
     if (r <= -0.99) r = -0.99;
   }
-  let low = -0.9, high = 1.0;
+  let low = -0.9,
+    high = 1.0;
   for (let i = 0; i < 200; i++) {
     const mid = (low + high) / 2;
     const fmid = npv(mid);
     if (Math.abs(fmid) < 1e-6) return mid;
     const flow = npv(low);
-    if (flow * fmid < 0) high = mid; else low = mid;
+    if (flow * fmid < 0) high = mid;
+    else low = mid;
   }
   return NaN;
 }
 
 function roiCashflows(
-  capex: number, billsNowBim: BMap, billsSolarBim: BMap,
-  discount: number, inflation: number, omRate: number, years: number, degradation = 0.005
+  capex: number,
+  billsNowBim: BMap,
+  billsSolarBim: BMap,
+  discount: number,
+  inflation: number,
+  omRate: number,
+  years: number,
+  degradation = 0.005
 ) {
   const annualNow = sumBMap(billsNowBim);
   const annualSolarY1 = sumBMap(billsSolarBim);
@@ -401,8 +478,9 @@ function roiCashflows(
   let payback: number | null = null;
   for (let y = 0; y <= years; y++) {
     let cf: number;
-    if (y === 0) cf = -capex;
-    else {
+    if (y === 0) {
+      cf = -capex;
+    } else {
       const degr = Math.pow(1 - degradation, y - 1);
       const priceF = Math.pow(1 + inflation, y - 1);
       const om = -omRate * capex * priceF;
@@ -432,10 +510,13 @@ function downloadCSV(filename: string, tables: Record<string, Row[]>) {
     if (!rows.length) continue;
     const cols = Object.keys(rows[0]);
     parts.push(cols.join(","));
-    for (const r of rows) parts.push(cols.map((c) => String(r[c] ?? "")).join(","));
+    for (const r of rows)
+      parts.push(cols.map((c) => String(r[c] ?? "")).join(","));
     parts.push("");
   }
-  const blob = new Blob([parts.join("\n")], { type: "text/csv;charset=utf-8;" });
+  const blob = new Blob([parts.join("\n")], {
+    type: "text/csv;charset=utf-8;",
+  });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -449,43 +530,79 @@ function downloadCSV(filename: string, tables: Record<string, Row[]>) {
 // =============================
 export default function Page() {
   // Consumo bimestral (kWh)
-  const [cons, setCons] = useLocalStorageState<BMap>(
-    lsKey("cons"),
-    { B1: 900, B2: 980, B3: 1100, B4: 1200, B5: 1000, B6: 950 }
-  );
+  const [cons, setCons] = useLocalStorageState<BMap>(lsKey("cons"), {
+    B1: 900,
+    B2: 980,
+    B3: 1100,
+    B4: 1200,
+    B5: 1000,
+    B6: 950,
+  });
 
   // Producción (GDL)
   const [psh, setPsh] = useLocalStorageState(lsKey("psh"), 5.5);
   const [pr, setPr] = useLocalStorageState(lsKey("pr"), 0.8);
-  const [availability, setAvailability] = useLocalStorageState(lsKey("availability"), 0.99);
+  const [availability, setAvailability] = useLocalStorageState(
+    lsKey("availability"),
+    0.99
+  );
   const [extraLoss, setExtraLoss] = useLocalStorageState(lsKey("extraLoss"), 0);
 
   // Sistema
   const [panelW, setPanelW] = useLocalStorageState(lsKey("panelW"), 550);
-  const [costPerKW, setCostPerKW] = useLocalStorageState(lsKey("costPerKW"), 23000);
-  const [targetCoverage, setTargetCoverage] = useLocalStorageState(lsKey("targetCoverage"), 0.95);
+  const [costPerKW, setCostPerKW] = useLocalStorageState(
+    lsKey("costPerKW"),
+    23000
+  );
+  const [targetCoverage, setTargetCoverage] = useLocalStorageState(
+    lsKey("targetCoverage"),
+    0.95
+  );
 
   // Finanzas
   const [discount, setDiscount] = useLocalStorageState(lsKey("discount"), 0.1);
   const [inflation, setInflation] = useLocalStorageState(lsKey("inflation"), 0.05);
   const [years, setYears] = useLocalStorageState(lsKey("years"), 25);
-  const [degradation, setDegradation] = useLocalStorageState(lsKey("degradation"), 0.005);
+  const [degradation, setDegradation] = useLocalStorageState(
+    lsKey("degradation"),
+    0.005
+  );
   const [omPct, setOmPct] = useLocalStorageState(lsKey("omPct"), 0.01);
 
   // Tarifas seleccionada y parámetros
-  const [tariff, setTariff] = useLocalStorageState<Tariff>(lsKey("tariff"), "PDBT");
+  const [tariff, setTariff] = useLocalStorageState<Tariff>(
+    lsKey("tariff"),
+    "PDBT"
+  );
   const [t01, setT01] = useLocalStorageState(lsKey("t01"), DEFAULT_TARIFFS["01"]);
-  const [tDAC, setTDAC] = useLocalStorageState(lsKey("tDAC"), DEFAULT_TARIFFS.DAC);
-  const [tGDMT, setTGDMT] = useLocalStorageState(lsKey("tGDMT"), DEFAULT_TARIFFS.GDMT);
-  const [tGDMTH, setTGDMTH] = useLocalStorageState(lsKey("tGDMTH"), DEFAULT_TARIFFS.GDMTH);
-  const [tPDBT, setTPDBT] = useLocalStorageState(lsKey("tPDBT"), DEFAULT_TARIFFS.PDBT);
-  const [usePdbtCal, setUsePdbtCal] = useLocalStorageState(lsKey("usePdbtCal"), true);
+  const [tDAC, setTDAC] = useLocalStorageState(
+    lsKey("tDAC"),
+    DEFAULT_TARIFFS.DAC
+  );
+  const [tGDMT, setTGDMT] = useLocalStorageState(
+    lsKey("tGDMT"),
+    DEFAULT_TARIFFS.GDMT
+  );
+  const [tGDMTH, setTGDMTH] = useLocalStorageState(
+    lsKey("tGDMTH"),
+    DEFAULT_TARIFFS.GDMTH
+  );
+  const [tPDBT, setTPDBT] = useLocalStorageState(
+    lsKey("tPDBT"),
+    DEFAULT_TARIFFS.PDBT
+  );
+  const [usePdbtCal, setUsePdbtCal] = useLocalStorageState(
+    lsKey("usePdbtCal"),
+    true
+  );
 
   // ===== BOM Estructura (ANTAI) — Entradas manuales =====
   const [bomPanels, setBomPanels] = useState<number>(8);
   const [bomWidthMM, setBomWidthMM] = useState<number>(1134);
   const [bomHeightMM, setBomHeightMM] = useState<number>(1722);
-  const [bomOrientation, setBomOrientation] = useState<"portrait" | "landscape">("portrait");
+  const [bomOrientation, setBomOrientation] = useState<"portrait" | "landscape">(
+    "portrait"
+  );
   const [bomGapMM, setBomGapMM] = useState<number>(20);
 
   // ===== Espaciado entre filas (anti-sombra) =====
@@ -497,7 +614,9 @@ export default function Page() {
   const [k2Panels, setK2Panels] = useState<number>(8);
   const [k2WidthMM, setK2WidthMM] = useState<number>(1134);
   const [k2HeightMM, setK2HeightMM] = useState<number>(1722);
-  const [k2Orientation, setK2Orientation] = useState<"portrait" | "landscape">("portrait");
+  const [k2Orientation, setK2Orientation] = useState<"portrait" | "landscape">(
+    "portrait"
+  );
   const [k2GapMM, setK2GapMM] = useState<number>(20);
   const [k2TiltDeg, setK2TiltDeg] = useState<number>(15);
   const [k2Mode, setK2Mode] = useState<K2RowMode>("tiltup_1row");
@@ -512,14 +631,17 @@ export default function Page() {
   const [termTemp, setTermTemp] = useState<75 | 90>(75);
 
   // String & Módulo
-  const [np, setNp] = useState(2);        // strings en paralelo
-  const [isc, setIsc] = useState(13.5);   // A
-  const [voc, setVoc] = useState(49);     // V
-  const [vmp, setVmp] = useState(41);     // V
-  const [mods, setMods] = useState(8);    // módulos en serie
-  const [betaVmp, setBetaVmp] = useState(-0.35); // %/°C
-  const [tCellHot, setTCellHot] = useState(65);  // °C
-  const [tMin, setTMin] = useState(5);           // °C
+  const [np, setNp] = useState(2); // strings en paralelo
+  const [isc, setIsc] = useState(13.5); // A
+  const [voc, setVoc] = useState(49); // V
+  const [vmp, setVmp] = useState(41); // V
+  const [mods, setMods] = useState(8); // módulos en serie
+  const [betaVmp, setBetaVmp] = useState(-0.35); // %/°C (negativo)
+  const [tCellHot, setTCellHot] = useState(65); // °C
+  const [tMin, setTMin] = useState(5); // °C
+  const [moduleMaxFuseA, setModuleMaxFuseA] = useState<number | undefined>(
+    undefined
+  ); // opcional
 
   // Inversor DC - límites
   const [vdcMax, setVdcMax] = useState(600);
@@ -533,39 +655,81 @@ export default function Page() {
   const [iMic, setIMic] = useState(1.3);
 
   // Distancias para caída de tensión
-  const [lenDcM, setLenDcM] = useState(20);   // m (ida)
-  const [lenAcM, setLenAcM] = useState(25);   // m (ida)
-  const [vac1p, setVac1p] = useState(240);    // V monofásico
+  const [lenDcM, setLenDcM] = useState(20); // m (ida)
+  const [lenAcM, setLenAcM] = useState(25); // m (ida)
+  const [vac1p, setVac1p] = useState(240); // V monofásico
   const [pf, setPf] = useState(1.0);
 
   function resetDefaults() {
     setCons({ B1: 900, B2: 980, B3: 1100, B4: 1200, B5: 1000, B6: 950 });
-    setPsh(5.5); setPr(0.8); setAvailability(0.99); setExtraLoss(0);
-    setPanelW(550); setCostPerKW(23000); setTargetCoverage(0.95);
-    setDiscount(0.1); setInflation(0.05); setYears(25); setDegradation(0.005); setOmPct(0.01);
-    setTariff("PDBT"); setT01(DEFAULT_TARIFFS["01"]); setTDAC(DEFAULT_TARIFFS.DAC);
-    setTGDMT(DEFAULT_TARIFFS.GDMT); setTGDMTH(DEFAULT_TARIFFS.GDMTH); setTPDBT(defaultPDBT);
+    setPsh(5.5);
+    setPr(0.8);
+    setAvailability(0.99);
+    setExtraLoss(0);
+    setPanelW(550);
+    setCostPerKW(23000);
+    setTargetCoverage(0.95);
+    setDiscount(0.1);
+    setInflation(0.05);
+    setYears(25);
+    setDegradation(0.005);
+    setOmPct(0.01);
+    setTariff("PDBT");
+    setT01(DEFAULT_TARIFFS["01"]);
+    setTDAC(DEFAULT_TARIFFS.DAC);
+    setTGDMT(DEFAULT_TARIFFS.GDMT);
+    setTGDMTH(DEFAULT_TARIFFS.GDMTH);
+    setTPDBT(defaultPDBT);
     setUsePdbtCal(true);
 
     // ANTAI
-    setBomPanels(8); setBomWidthMM(1134); setBomHeightMM(1722);
-    setBomOrientation("portrait"); setBomGapMM(20);
-    setTiltDeg(20); setDesignSunAltDeg(25); setSpacingExtra(0.1);
+    setBomPanels(8);
+    setBomWidthMM(1134);
+    setBomHeightMM(1722);
+    setBomOrientation("portrait");
+    setBomGapMM(20);
+    setTiltDeg(20);
+    setDesignSunAltDeg(25);
+    setSpacingExtra(0.1);
 
     // K2
-    setK2Panels(8); setK2WidthMM(1134); setK2HeightMM(1722);
-    setK2Orientation("portrait"); setK2GapMM(20); setK2TiltDeg(15);
-    setK2Mode("tiltup_1row"); setK2AutoSpan(true); setK2SpanEwM(1.2); setK2NsPresetMM(undefined);
+    setK2Panels(8);
+    setK2WidthMM(1134);
+    setK2HeightMM(1722);
+    setK2Orientation("portrait");
+    setK2GapMM(20);
+    setK2TiltDeg(15);
+    setK2Mode("tiltup_1row");
+    setK2AutoSpan(true);
+    setK2SpanEwM(1.2);
+    setK2NsPresetMM(undefined);
 
     // Cableado
-    setFTemp(1.0); setFBundling(1.0); setTermTemp(75);
-    setNp(2); setIsc(13.5); setVoc(49); setVmp(41); setMods(8);
-    setBetaVmp(-0.35); setTCellHot(65); setTMin(5);
-    setVdcMax(600); setVmpptMin(200);
-    setIInv(16); setNMic(4); setIMic(1.3);
-    setLenDcM(20); setLenAcM(25); setVac1p(240); setPf(1.0);
+    setFTemp(1.0);
+    setFBundling(1.0);
+    setTermTemp(75);
+    setNp(2);
+    setIsc(13.5);
+    setVoc(49);
+    setVmp(41);
+    setMods(8);
+    setBetaVmp(-0.35);
+    setTCellHot(65);
+    setTMin(5);
+    setModuleMaxFuseA(undefined);
+    setVdcMax(600);
+    setVmpptMin(200);
+    setIInv(16);
+    setNMic(4);
+    setIMic(1.3);
+    setLenDcM(20);
+    setLenAcM(25);
+    setVac1p(240);
+    setPf(1.0);
 
-    try { localStorage.clear(); } catch {}
+    try {
+      localStorage.clear();
+    } catch {}
   }
 
   // =============================
@@ -593,10 +757,15 @@ export default function Page() {
     [systemKW, annualKWhPerKW]
   );
   const params: TariffParams =
-    tariff === "01"   ? t01  :
-    tariff === "DAC"  ? tDAC :
-    tariff === "GDMT" ? tGDMT :
-    tariff === "GDMTH"? tGDMTH : tPDBT;
+    tariff === "01"
+      ? t01
+      : tariff === "DAC"
+      ? tDAC
+      : tariff === "GDMT"
+      ? tGDMT
+      : tariff === "GDMTH"
+      ? tGDMTH
+      : tPDBT;
 
   // Recibos
   const billsNowBim = useMemo(
@@ -604,23 +773,26 @@ export default function Page() {
     [cons, tariff, params, usePdbtCal]
   );
   const { bills: billsSolarBim, creditsTrace } = useMemo(
-    () => billsWithSolarBim(cons, genBim, tariff, params, true, true, usePdbtCal),
+    () =>
+      billsWithSolarBim(cons, genBim, tariff, params, true, true, usePdbtCal),
     [cons, genBim, tariff, params, usePdbtCal]
   );
 
   // Ahorros por bimestre
   const savingsBimMXN = useMemo(() => {
-    const out: BMap = { B1:0,B2:0,B3:0,B4:0,B5:0,B6:0 };
+    const out: BMap = { B1: 0, B2: 0, B3: 0, B4: 0, B5: 0, B6: 0 };
     (Object.keys(out) as BKey[]).forEach((b) => {
-      out[b] = round2(Math.max((billsNowBim[b] || 0) - (billsSolarBim[b] || 0), 0));
+      out[b] = round2(
+        Math.max((billsNowBim[b] || 0) - (billsSolarBim[b] || 0), 0)
+      );
     });
     return out;
   }, [billsNowBim, billsSolarBim]);
   const savingsBimPct = useMemo(() => {
-    const out: BMap = { B1:0,B2:0,B3:0,B4:0,B5:0,B6:0 };
+    const out: BMap = { B1: 0, B2: 0, B3: 0, B4: 0, B5: 0, B6: 0 };
     (Object.keys(out) as BKey[]).forEach((b) => {
       const base = billsNowBim[b] || 0;
-      const sav  = savingsBimMXN[b] || 0;
+      const sav = savingsBimMXN[b] || 0;
       out[b] = base > 0 ? round2((sav / base) * 100) : 0;
     });
     return out;
@@ -628,20 +800,66 @@ export default function Page() {
 
   const capex = useMemo(() => systemKW * costPerKW, [systemKW, costPerKW]);
   const roi = useMemo(
-    () => roiCashflows(capex, billsNowBim, billsSolarBim, discount, inflation, omPct, years, degradation),
-    [capex, billsNowBim, billsSolarBim, discount, inflation, omPct, years, degradation]
+    () =>
+      roiCashflows(
+        capex,
+        billsNowBim,
+        billsSolarBim,
+        discount,
+        inflation,
+        omPct,
+        years,
+        degradation
+      ),
+    [
+      capex,
+      billsNowBim,
+      billsSolarBim,
+      discount,
+      inflation,
+      omPct,
+      years,
+      degradation,
+    ]
   );
-  const summary = useMemo(() => ([
-    { Indicador: "CAPEX (MXN)", Valor: fmt(capex, 0) },
-    { Indicador: "Consumo anual (kWh)", Valor: fmt(annualLoad, 0) },
-    { Indicador: "Generación anual esperada (kWh)", Valor: fmt(sumBMap(genBim), 0) },
-    { Indicador: "Factura anual actual (MXN)", Valor: fmt(sumBMap(billsNowBim), 0) },
-    { Indicador: "Factura anual con PV (MXN)", Valor: fmt(sumBMap(billsSolarBim), 0) },
-    { Indicador: "Ahorro anual año 1 (MXN)", Valor: fmt(sumBMap(savingsBimMXN), 0) },
-    { Indicador: "Payback (años)", Valor: roi.payback ?? "N/D" },
-    { Indicador: `NPV (MXN, ${years} años)`, Valor: fmt(roi.npv, 0) },
-    { Indicador: "IRR (anual)", Valor: isFinite(roi.irr) ? `${fmt(roi.irr * 100, 1)}%` : "N/D" },
-  ]), [capex, annualLoad, genBim, billsNowBim, billsSolarBim, savingsBimMXN, roi, years]);
+  const summary = useMemo(
+    () => [
+      { Indicador: "CAPEX (MXN)", Valor: fmt(capex, 0) },
+      { Indicador: "Consumo anual (kWh)", Valor: fmt(annualLoad, 0) },
+      {
+        Indicador: "Generación anual esperada (kWh)",
+        Valor: fmt(sumBMap(genBim), 0),
+      },
+      {
+        Indicador: "Factura anual actual (MXN)",
+        Valor: fmt(sumBMap(billsNowBim), 0),
+      },
+      {
+        Indicador: "Factura anual con PV (MXN)",
+        Valor: fmt(sumBMap(billsSolarBim), 0),
+      },
+      {
+        Indicador: "Ahorro anual año 1 (MXN)",
+        Valor: fmt(sumBMap(savingsBimMXN), 0),
+      },
+      { Indicador: "Payback (años)", Valor: roi.payback ?? "N/D" },
+      { Indicador: `NPV (MXN, ${years} años)`, Valor: fmt(roi.npv, 0) },
+      {
+        Indicador: "IRR (anual)",
+        Valor: isFinite(roi.irr) ? `${fmt(roi.irr * 100, 1)}%` : "N/D",
+      },
+    ],
+    [
+      capex,
+      annualLoad,
+      genBim,
+      billsNowBim,
+      billsSolarBim,
+      savingsBimMXN,
+      roi,
+      years,
+    ]
+  );
 
   function updateBim(b: BKey, val: string) {
     const v = Number(val.replace(",", ".")) || 0;
@@ -650,21 +868,42 @@ export default function Page() {
 
   function exportCSV() {
     const bimKeys = Object.keys(BIM_LABELS) as BKey[];
-    const genRows = bimKeys.map((b) => ({ Bimestre: BIM_LABELS[b], Generacion_kWh: genBim[b] }));
-    const billNowRows = bimKeys.map((b) => ({ Bimestre: BIM_LABELS[b], Consumo_kWh: cons[b], Factura_actual_MXN: billsNowBim[b] }));
-    const billSolarRows = bimKeys.map((b) => ({
-      Bimestre: BIM_LABELS[b], Consumo_neto_kWh: Math.max(cons[b] - genBim[b], 0),
-      Factura_con_PV_MXN: billsSolarBim[b], Creditos_kWh: creditsTrace[b]
+    const genRows = bimKeys.map((b) => ({
+      Bimestre: BIM_LABELS[b],
+      Generacion_kWh: genBim[b],
     }));
-    const savingsRows = bimKeys.map((b) => ({ Bimestre: BIM_LABELS[b], Ahorro_MXN: savingsBimMXN[b], Ahorro_pct: savingsBimPct[b] }));
-    const summaryRows = summary.map((r) => ({ Indicador: r.Indicador, Valor: r.Valor }));
+    const billNowRows = bimKeys.map((b) => ({
+      Bimestre: BIM_LABELS[b],
+      Consumo_kWh: cons[b],
+      Factura_actual_MXN: billsNowBim[b],
+    }));
+    const billSolarRows = bimKeys.map((b) => ({
+      Bimestre: BIM_LABELS[b],
+      Consumo_neto_kWh: Math.max(cons[b] - genBim[b], 0),
+      Factura_con_PV_MXN: billsSolarBim[b],
+      Creditos_kWh: creditsTrace[b],
+    }));
+    const savingsRows = bimKeys.map((b) => ({
+      Bimestre: BIM_LABELS[b],
+      Ahorro_MXN: savingsBimMXN[b],
+      Ahorro_pct: savingsBimPct[b],
+    }));
+    const summaryRows = summary.map((r) => ({
+      Indicador: r.Indicador,
+      Valor: r.Valor,
+    }));
     downloadCSV("cotizador_bimestral_gdl.csv", {
-      "Generacion_Bim": genRows,
-      "Factura_actual_Bim": billNowRows,
-      "Factura_con_PV_Bim": billSolarRows,
-      "Ahorros_Bim": savingsRows,
-      "Resumen": summaryRows,
-      "Flujos": roi.rows.map((r) => ({ Anio: r.year, Flujo: round2(r.cf), Flujo_descontado: round2(r.pv), Acumulado: round2(r.cum) })),
+      Generacion_Bim: genRows,
+      Factura_actual_Bim: billNowRows,
+      Factura_con_PV_Bim: billSolarRows,
+      Ahorros_Bim: savingsRows,
+      Resumen: summaryRows,
+      Flujos: roi.rows.map((r) => ({
+        Anio: r.year,
+        Flujo: round2(r.cf),
+        Flujo_descontado: round2(r.pv),
+        Acumulado: round2(r.cum),
+      })),
     });
   }
 
@@ -676,8 +915,23 @@ export default function Page() {
 
   // ===== Espaciado entre filas (ANTAI) — LE-LE (mm)
   const rowSpacingMM = useMemo(
-    () => rowSpacingLEtoLEmm(bomOrientation, bomWidthMM, bomHeightMM, tiltDeg, designSunAltDeg, spacingExtra),
-    [bomOrientation, bomWidthMM, bomHeightMM, tiltDeg, designSunAltDeg, spacingExtra]
+    () =>
+      rowSpacingLEtoLEmm(
+        bomOrientation,
+        bomWidthMM,
+        bomHeightMM,
+        tiltDeg,
+        designSunAltDeg,
+        spacingExtra
+      ),
+    [
+      bomOrientation,
+      bomWidthMM,
+      bomHeightMM,
+      tiltDeg,
+      designSunAltDeg,
+      spacingExtra,
+    ]
   );
 
   // ===== K2 – Cálculo BOM (Tilt Up 1 fila / Multi-Row 2 filas) =====
@@ -694,7 +948,18 @@ export default function Page() {
       spanEwMM: Math.round(k2SpanEwM * 1000),
       nsRailSpacingPresetMM: k2NsPresetMM,
     });
-  }, [k2Panels, k2WidthMM, k2HeightMM, k2Orientation, k2GapMM, k2TiltDeg, k2Mode, k2AutoSpan, k2SpanEwM, k2NsPresetMM]);
+  }, [
+    k2Panels,
+    k2WidthMM,
+    k2HeightMM,
+    k2Orientation,
+    k2GapMM,
+    k2TiltDeg,
+    k2Mode,
+    k2AutoSpan,
+    k2SpanEwM,
+    k2NsPresetMM,
+  ]);
 
   // ===== Cálculos de cableado (NOM-001-SEDE-2012) =====
   const derate = useMemo(
@@ -709,11 +974,10 @@ export default function Page() {
       iscModuloA: isc,
     });
 
-    // 2) Ampacidad requerida y OCPD sugerido
+    // 2) Ampacidad requerida
     const minAmpacity = requiredConductorAmpacityA(iMax, derate);
-    const ocpd = ocpdRecommendedA(iMax);
 
-    // 3) Voc en frío (690-7) + rango sugerido de módulos por string
+    // 3) Voc en frío y rango sugerido Ns (usa Vmp en caliente)
     const { vocStringFrioV } = checkStringVocCold(voc, mods, tMin);
     const range = suggestStringRange({
       inverterVdcMaxV: vdcMax,
@@ -725,25 +989,55 @@ export default function Page() {
       tAmbientColdC: tMin,
     });
 
-    // 4) Selección de calibre cobre y caída de tensión DC
+    // Vmp string mostrado = en caliente
+    const vmpStringHot = Math.max(1, range.vmpHotV) * mods;
+
+    // 4) Selección AWG y Vd
     const awgSel = selectCopperAwg(minAmpacity, derate);
-    const vmpString = vmp * mods;
     const vd = voltageDropDCDC({
-      awg: awgSel.awg as CopperAwg, // <-- cast
+      awg: awgSel.awg,
       currentA: iMax,
       lengthOneWayM: lenDcM,
-      voltageV: Math.max(1, vmpString),
+      voltageV: vmpStringHot,
     });
-    const vdChk = vdExceeds(vd.pct, "ramal"); // 3% recomendado
+    const vdChk = vdExceeds(vd.pct, "ramal"); // 3%
 
-    return { iSum, iMax, minAmpacity, ocpd, vocStringFrioV, range, awgSel, vmpString, vd, vdChk };
-  }, [np, isc, voc, vmp, mods, betaVmp, tCellHot, tMin, vdcMax, vmpptMin, lenDcM, derate]);
+    // 5) OCPD DC redondeado a tamaño comercial; limitar por fusible máx módulo si se da
+    const ocpd = ocpdRecommendedRoundedA(iMax, moduleMaxFuseA);
+
+    return {
+      iSum,
+      iMax,
+      minAmp: minAmpacity,
+      ocpd,
+      vocStringFrioV,
+      range,
+      awgSel,
+      vmpString: vmpStringHot,
+      vd,
+      vdChk,
+    };
+  }, [
+    np,
+    isc,
+    voc,
+    vmp,
+    mods,
+    betaVmp,
+    tCellHot,
+    tMin,
+    vdcMax,
+    vmpptMin,
+    lenDcM,
+    derate,
+    moduleMaxFuseA,
+  ]);
 
   const acCentral = useMemo(() => {
     const out = inverterAcSizing({ iOutInvA: iInv }, derate);
     const awgSel = selectCopperAwg(out.minAmpacity, derate);
     const vd = voltageDropAC1P({
-      awg: awgSel.awg as CopperAwg, // <-- cast
+      awg: awgSel.awg,
       currentA: out.iMax,
       lengthOneWayM: lenAcM,
       voltageV: vac1p,
@@ -751,13 +1045,13 @@ export default function Page() {
     });
     const vdChk = vdExceeds(vd.pct, "alimentador"); // 5%
     return { ...out, awgSel, vd, vdChk };
-  }, [iInv, lenAcM, vac1p, pf, derate]);
+  }, [iInv, derate, lenAcM, vac1p, pf]);
 
   const acMicro = useMemo(() => {
     const out = microBranchSizing({ nMicros: nMic, iOutMicroA: iMic }, derate);
     const awgSel = selectCopperAwg(out.minAmpacity, derate);
     const vd = voltageDropAC1P({
-      awg: awgSel.awg as CopperAwg, // <-- cast
+      awg: awgSel.awg,
       currentA: out.iMax,
       lengthOneWayM: lenAcM,
       voltageV: vac1p,
@@ -765,7 +1059,7 @@ export default function Page() {
     });
     const vdChk = vdExceeds(vd.pct, "ramal"); // 3%
     return { ...out, awgSel, vd, vdChk };
-  }, [nMic, iMic, lenAcM, vac1p, pf, derate]);
+  }, [nMic, iMic, derate, lenAcM, vac1p, pf]);
 
   // =============================
   // JSX
@@ -857,7 +1151,9 @@ export default function Page() {
                   <button
                     key={t}
                     onClick={() => setTariff(t)}
-                    className={`px-3 py-1 rounded-full border ${tariff === t ? "bg-black text-white" : "bg-white"}`}
+                    className={`px-3 py-1 rounded-full border ${
+                      tariff === t ? "bg-black text-white" : "bg-white"
+                    }`}
                   >
                     {t}
                   </button>
@@ -865,87 +1161,261 @@ export default function Page() {
               </div>
 
               {tariff === "01" && (
-  <div className="grid grid-cols-2 gap-3">
-    <Num
-      label="Cargo fijo BIM (MXN)"
-      value={t01.fixed_mxn_bim}
-      setValue={(v) => setT01({ ...t01, fixed_mxn_bim: v })}
-      step={10}
-    />
-    <Num
-      label="Bloque Básico (kWh/BIM)"
-      value={t01.kwh_basic_block_bim}
-      setValue={(v) => setT01({ ...t01, kwh_basic_block_bim: v })}
-      step={10}
-    />
-    <Num
-      label="Bloque Intermedio (kWh/BIM)"
-      value={t01.kwh_intermediate_block_bim}
-      setValue={(v) => setT01({ ...t01, kwh_intermediate_block_bim: v })}
-      step={10}
-    />
-    <Num
-      label="Tarifa Básico ($/kWh)"
-      value={t01.mxn_per_kwh_basic}
-      setValue={(v) => setT01({ ...t01, mxn_per_kwh_basic: v })}
-      step={0.05}
-    />
-    <Num
-      label="Tarifa Intermedio ($/kWh)"
-      value={t01.mxn_per_kwh_intermediate}
-      setValue={(v) => setT01({ ...t01, mxn_per_kwh_intermediate: v })}
-      step={0.05}
-    />
-    <Num
-      label="Tarifa Excedente ($/kWh)"
-      value={t01.mxn_per_kwh_exceed}
-      setValue={(v) => setT01({ ...t01, mxn_per_kwh_exceed: v })}
-      step={0.05}
-    />
-  </div>
-)}
-
+                <div className="grid grid-cols-2 gap-3">
+                  <Num
+                    label="Cargo fijo BIM (MXN)"
+                    value={t01.fixed_mxn_bim}
+                    setValue={(v) => setT01({ ...t01, fixed_mxn_bim: v })}
+                    step={10}
+                  />
+                  <Num
+                    label="Bloque Básico (kWh/BIM)"
+                    value={t01.kwh_basic_block_bim}
+                    setValue={(v) =>
+                      setT01({ ...t01, kwh_basic_block_bim: v })
+                    }
+                    step={10}
+                  />
+                  <Num
+                    label="Bloque Intermedio (kWh/BIM)"
+                    value={t01.kwh_intermediate_block_bim}
+                    setValue={(v) =>
+                      setT01({ ...t01, kwh_intermediate_block_bim: v })
+                    }
+                    step={10}
+                  />
+                  <Num
+                    label="Tarifa Básico ($/kWh)"
+                    value={t01.mxn_per_kwh_basic}
+                    setValue={(v) =>
+                      setT01({ ...t01, mxn_per_kwh_basic: v })
+                    }
+                    step={0.05}
+                  />
+                  <Num
+                    label="Tarifa Intermedio ($/kWh)"
+                    value={t01.mxn_per_kwh_intermediate}
+                    setValue={(v) =>
+                      setT01({ ...t01, mxn_per_kwh_intermediate: v })
+                    }
+                    step={0.05}
+                  />
+                  <Num
+                    label="Tarifa Excedente ($/kWh)"
+                    value={t01.mxn_per_kwh_exceed}
+                    setValue={(v) =>
+                      setT01({ ...t01, mxn_per_kwh_exceed: v })
+                    }
+                    step={0.05}
+                  />
+                </div>
+              )}
 
               {tariff === "DAC" && (
                 <div className="grid grid-cols-2 gap-3">
-                  <Num label="Cargo fijo BIM (MXN)" value={tDAC.fixed_mxn_bim} setValue={(v) => setTDAC({ ...tDAC, fixed_mxn_bim: v })} step={10} />
-                  <Num label="MXN/kWh" value={tDAC.mxn_per_kwh} setValue={(v) => setTDAC({ ...tDAC, mxn_per_kwh: v })} step={0.1} />
+                  <Num
+                    label="Cargo fijo BIM (MXN)"
+                    value={tDAC.fixed_mxn_bim}
+                    setValue={(v) =>
+                      setTDAC({ ...tDAC, fixed_mxn_bim: v })
+                    }
+                    step={10}
+                  />
+                  <Num
+                    label="MXN/kWh"
+                    value={tDAC.mxn_per_kwh}
+                    setValue={(v) =>
+                      setTDAC({ ...tDAC, mxn_per_kwh: v })
+                    }
+                    step={0.1}
+                  />
                 </div>
               )}
 
               {tariff === "GDMT" && (
                 <div className="grid grid-cols-2 gap-3">
-                  <Num label="Cargo fijo BIM (MXN)" value={tGDMT.fixed_mxn_bim} setValue={(v) => setTGDMT({ ...tGDMT, fixed_mxn_bim: v })} step={10} />
-                  <Num label="MXN/kWh" value={tGDMT.mxn_per_kwh} setValue={(v) => setTGDMT({ ...tGDMT, mxn_per_kwh: v })} step={0.1} />
-                  <Num label="MXN/kW-mes (demanda)" value={tGDMT.mxn_per_kw_demand_month} setValue={(v) => setTGDMT({ ...tGDMT, mxn_per_kw_demand_month: v })} step={5} />
-                  <Num label="Load factor" value={tGDMT.assumed_load_factor} setValue={(v) => setTGDMT({ ...tGDMT, assumed_load_factor: v })} step={0.05} />
+                  <Num
+                    label="Cargo fijo BIM (MXN)"
+                    value={tGDMT.fixed_mxn_bim}
+                    setValue={(v) =>
+                      setTGDMT({ ...tGDMT, fixed_mxn_bim: v })
+                    }
+                    step={10}
+                  />
+                  <Num
+                    label="MXN/kWh"
+                    value={tGDMT.mxn_per_kwh}
+                    setValue={(v) =>
+                      setTGDMT({ ...tGDMT, mxn_per_kwh: v })
+                    }
+                    step={0.1}
+                  />
+                  <Num
+                    label="MXN/kW-mes (demanda)"
+                    value={tGDMT.mxn_per_kw_demand_month}
+                    setValue={(v) =>
+                      setTGDMT({ ...tGDMT, mxn_per_kw_demand_month: v })
+                    }
+                    step={5}
+                  />
+                  <Num
+                    label="Load factor"
+                    value={tGDMT.assumed_load_factor}
+                    setValue={(v) =>
+                      setTGDMT({ ...tGDMT, assumed_load_factor: v })
+                    }
+                    step={0.05}
+                  />
                 </div>
               )}
 
               {tariff === "GDMTH" && (
                 <div className="grid grid-cols-2 gap-3">
-                  <Num label="Cargo fijo BIM (MXN)" value={tGDMTH.fixed_mxn_bim} setValue={(v) => setTGDMTH({ ...tGDMTH, fixed_mxn_bim: v })} step={10} />
-                  <Num label="MXN/kW-mes (demanda)" value={tGDMTH.mxn_per_kw_demand_month} setValue={(v) => setTGDMTH({ ...tGDMTH, mxn_per_kw_demand_month: v })} step={5} />
-                  <Num label="MXN/kWh punta" value={tGDMTH.mxn_per_kwh_punta} setValue={(v) => setTGDMTH({ ...tGDMTH, mxn_per_kwh_punta: v })} step={0.1} />
-                  <Num label="MXN/kWh intermedia" value={tGDMTH.mxn_per_kwh_intermedia} setValue={(v) => setTGDMTH({ ...tGDMTH, mxn_per_kwh_intermedia: v })} step={0.1} />
-                  <Num label="MXN/kWh base" value={tGDMTH.mxn_per_kwh_base} setValue={(v) => setTGDMTH({ ...tGDMTH, mxn_per_kwh_base: v })} step={0.1} />
-                  <Num label="Split punta" value={tGDMTH.split_punta} setValue={(v) => setTGDMTH({ ...tGDMTH, split_punta: v })} step={0.01} />
-                  <Num label="Split intermedia" value={tGDMTH.split_intermedia} setValue={(v) => setTGDMTH({ ...tGDMTH, split_intermedia: v })} step={0.01} />
-                  <Num label="Split base" value={tGDMTH.split_base} setValue={(v) => setTGDMTH({ ...tGDMTH, split_base: v })} step={0.01} />
-                  <Num label="Load factor" value={tGDMTH.assumed_load_factor} setValue={(v) => setTGDMTH({ ...tGDMTH, assumed_load_factor: v })} step={0.05} />
+                  <Num
+                    label="Cargo fijo BIM (MXN)"
+                    value={tGDMTH.fixed_mxn_bim}
+                    setValue={(v) =>
+                      setTGDMTH({ ...tGDMTH, fixed_mxn_bim: v })
+                    }
+                    step={10}
+                  />
+                  <Num
+                    label="MXN/kW-mes (demanda)"
+                    value={tGDMTH.mxn_per_kw_demand_month}
+                    setValue={(v) =>
+                      setTGDMTH({
+                        ...tGDMTH,
+                        mxn_per_kw_demand_month: v,
+                      })
+                    }
+                    step={5}
+                  />
+                  <Num
+                    label="MXN/kWh punta"
+                    value={tGDMTH.mxn_per_kwh_punta}
+                    setValue={(v) =>
+                      setTGDMTH({ ...tGDMTH, mxn_per_kwh_punta: v })
+                    }
+                    step={0.1}
+                  />
+                  <Num
+                    label="MXN/kWh intermedia"
+                    value={tGDMTH.mxn_per_kwh_intermedia}
+                    setValue={(v) =>
+                      setTGDMTH({
+                        ...tGDMTH,
+                        mxn_per_kwh_intermedia: v,
+                      })
+                    }
+                    step={0.1}
+                  />
+                  <Num
+                    label="MXN/kWh base"
+                    value={tGDMTH.mxn_per_kwh_base}
+                    setValue={(v) =>
+                      setTGDMTH({ ...tGDMTH, mxn_per_kwh_base: v })
+                    }
+                    step={0.1}
+                  />
+                  <Num
+                    label="Split punta"
+                    value={tGDMTH.split_punta}
+                    setValue={(v) =>
+                      setTGDMTH({ ...tGDMTH, split_punta: v })
+                    }
+                    step={0.01}
+                  />
+                  <Num
+                    label="Split intermedia"
+                    value={tGDMTH.split_intermedia}
+                    setValue={(v) =>
+                      setTGDMTH({ ...tGDMTH, split_intermedia: v })
+                    }
+                    step={0.01}
+                  />
+                  <Num
+                    label="Split base"
+                    value={tGDMTH.split_base}
+                    setValue={(v) =>
+                      setTGDMTH({ ...tGDMTH, split_base: v })
+                    }
+                    step={0.01}
+                  />
+                  <Num
+                    label="Load factor"
+                    value={tGDMTH.assumed_load_factor}
+                    setValue={(v) =>
+                      setTGDMTH({ ...tGDMTH, assumed_load_factor: v })
+                    }
+                    step={0.05}
+                  />
                 </div>
               )}
 
               {tariff === "PDBT" && (
                 <div className="grid grid-cols-2 gap-3">
-                  <Num label="Suministro (MXN/BIM)" value={tPDBT.suministro_mxn_bim} setValue={(v) => setTPDBT({ ...tPDBT, suministro_mxn_bim: v })} step={1} />
-                  <Num label="Distribución ($/kWh)" value={tPDBT.distribucion_mxn_kwh} setValue={(v) => setTPDBT({ ...tPDBT, distribucion_mxn_kwh: v })} step={0.01} />
-                  <Num label="Transmisión ($/kWh)" value={tPDBT.transmision_mxn_kwh} setValue={(v) => setTPDBT({ ...tPDBT, transmision_mxn_kwh: v })} step={0.01} />
-                  <Num label="CENACE ($/kWh)" value={tPDBT.cenace_mxn_kwh} setValue={(v) => setTPDBT({ ...tPDBT, cenace_mxn_kwh: v })} step={0.01} />
-                  <Num label="Energía ($/kWh)" value={tPDBT.energia_mxn_kwh} setValue={(v) => setTPDBT({ ...tPDBT, energia_mxn_kwh: v })} step={0.01} />
-                  <Num label="Capacidad ($/kWh)" value={tPDBT.capacidad_mxn_kwh} setValue={(v) => setTPDBT({ ...tPDBT, capacidad_mxn_kwh: v })} step={0.01} />
-                  <Num label="SCnMEM ($/kWh)" value={tPDBT.scnmem_mxn_kwh} setValue={(v) => setTPDBT({ ...tPDBT, scnmem_mxn_kwh: v })} step={0.01} />
-                  <Num label="IVA" value={tPDBT.iva} setValue={(v) => setTPDBT({ ...tPDBT, iva: v })} step={0.01} />
+                  <Num
+                    label="Suministro (MXN/BIM)"
+                    value={tPDBT.suministro_mxn_bim}
+                    setValue={(v) =>
+                      setTPDBT({ ...tPDBT, suministro_mxn_bim: v })
+                    }
+                    step={1}
+                  />
+                  <Num
+                    label="Distribución ($/kWh)"
+                    value={tPDBT.distribucion_mxn_kwh}
+                    setValue={(v) =>
+                      setTPDBT({ ...tPDBT, distribucion_mxn_kwh: v })
+                    }
+                    step={0.01}
+                  />
+                  <Num
+                    label="Transmisión ($/kWh)"
+                    value={tPDBT.transmision_mxn_kwh}
+                    setValue={(v) =>
+                      setTPDBT({ ...tPDBT, transmision_mxn_kwh: v })
+                    }
+                    step={0.01}
+                  />
+                  <Num
+                    label="CENACE ($/kWh)"
+                    value={tPDBT.cenace_mxn_kwh}
+                    setValue={(v) =>
+                      setTPDBT({ ...tPDBT, cenace_mxn_kwh: v })
+                    }
+                    step={0.01}
+                  />
+                  <Num
+                    label="Energía ($/kWh)"
+                    value={tPDBT.energia_mxn_kwh}
+                    setValue={(v) =>
+                      setTPDBT({ ...tPDBT, energia_mxn_kwh: v })
+                    }
+                    step={0.01}
+                  />
+                  <Num
+                    label="Capacidad ($/kWh)"
+                    value={tPDBT.capacidad_mxn_kwh}
+                    setValue={(v) =>
+                      setTPDBT({ ...tPDBT, capacidad_mxn_kwh: v })
+                    }
+                    step={0.01}
+                  />
+                  <Num
+                    label="SCnMEM ($/kWh)"
+                    value={tPDBT.scnmem_mxn_kwh}
+                    setValue={(v) =>
+                      setTPDBT({ ...tPDBT, scnmem_mxn_kwh: v })
+                    }
+                    step={0.01}
+                  />
+                  <Num
+                    label="IVA"
+                    value={tPDBT.iva}
+                    setValue={(v) => setTPDBT({ ...tPDBT, iva: v })}
+                    step={0.01}
+                  />
                 </div>
               )}
             </div>
@@ -964,7 +1434,9 @@ export default function Page() {
                   onChange={(e) => setUsePdbtCal(e.target.checked)}
                 />
                 <span className="font-medium">Usar modo calibrado PDBT</span>
-                <span className="text-xs text-gray-500">(fijo + $/kWh ajustado a tus recibos)</span>
+                <span className="text-xs text-gray-500">
+                  (fijo + $/kWh ajustado a tus recibos)
+                </span>
                 <Help
                   text={`Al activar este modo, se ignoran los unitarios de arriba y el costo PDBT se calcula como:
 costo_bimestre = fijo + ($/kWh × kWh). Los valores están calibrados con tus recibos e incluyen IVA.
@@ -976,15 +1448,27 @@ Para obtenerlo desde tu recibo, divide el costo total de cada concepto entre los
 
               {usePdbtCal && (
                 <p className="text-xs text-gray-500 mt-2">
-                  *Calibrado con recibos CFE (IVA incluido): fijo ≈ ${PDBT_FIXED_BIMX_MXN.toFixed(0)} + {PDBT_RATE_MXN_PER_KWH.toFixed(4)} $/kWh.
+                  *Calibrado con recibos CFE (IVA incluido): fijo ≈ $
+                  {PDBT_FIXED_BIMX_MXN.toFixed(0)} +{" "}
+                  {PDBT_RATE_MXN_PER_KWH.toFixed(4)} $/kWh.
                 </p>
               )}
             </div>
           )}
 
           <div className="flex gap-3 mt-3">
-            <button onClick={exportCSV} className="px-4 py-2 rounded-xl bg-black text-white">Descargar CSV</button>
-            <button onClick={resetDefaults} className="px-4 py-2 rounded-xl bg-gray-200 text-black">Restablecer valores</button>
+            <button
+              onClick={exportCSV}
+              className="px-4 py-2 rounded-xl bg-black text-white"
+            >
+              Descargar CSV
+            </button>
+            <button
+              onClick={resetDefaults}
+              className="px-4 py-2 rounded-xl bg-gray-200 text-black"
+            >
+              Restablecer valores
+            </button>
           </div>
         </section>
 
@@ -994,7 +1478,10 @@ Para obtenerlo desde tu recibo, divide el costo total de cada concepto entre los
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
               <KV k="Paneles" v={String(panels)} />
               <KV k="Tamaño (kWdc)" v={fmt(systemKW, 2)} />
-              <KV k="Generación anual esperada (kWh)" v={fmt(sumBMap(genBim), 0)} />
+              <KV
+                k="Generación anual esperada (kWh)"
+                v={fmt(sumBMap(genBim), 0)}
+              />
               <KV k="Consumo anual (kWh)" v={fmt(annualLoad, 0)} />
               <KV k="kWh/kW-año" v={fmt(annualKWhPerKW, 0)} />
               <KV k="CAPEX (MXN)" v={fmt(capex, 0)} />
@@ -1003,44 +1490,64 @@ Para obtenerlo desde tu recibo, divide el costo total de cada concepto entre los
 
           <TwoCol>
             <Card title="Generación por bimestre (kWh)">
-              <Table rows={(Object.keys(BIM_LABELS) as BKey[]).map((b) => ({
-                Bimestre: BIM_LABELS[b], "Generación (kWh)": fmt(genBim[b], 2),
-              }))} />
+              <Table
+                rows={(Object.keys(BIM_LABELS) as BKey[]).map((b) => ({
+                  Bimestre: BIM_LABELS[b],
+                  "Generación (kWh)": fmt(genBim[b], 2),
+                }))}
+              />
             </Card>
             <Card title="Factura bimestral actual (sin PV)">
-              <Table rows={(Object.keys(BIM_LABELS) as BKey[]).map((b) => ({
-                Bimestre: BIM_LABELS[b], "Consumo (kWh)": fmt(cons[b], 0), "Factura (MXN)": fmt(billsNowBim[b], 2),
-              }))} />
+              <Table
+                rows={(Object.keys(BIM_LABELS) as BKey[]).map((b) => ({
+                  Bimestre: BIM_LABELS[b],
+                  "Consumo (kWh)": fmt(cons[b], 0),
+                  "Factura (MXN)": fmt(billsNowBim[b], 2),
+                }))}
+              />
             </Card>
           </TwoCol>
 
           <TwoCol>
             <Card title="Factura bimestral con PV (neteo)">
-              <Table rows={(Object.keys(BIM_LABELS) as BKey[]).map((b) => ({
-                Bimestre: BIM_LABELS[b],
-                "Consumo neto (kWh)": fmt(Math.max(cons[b] - genBim[b], 0), 2),
-                "Factura con PV (MXN)": fmt(billsSolarBim[b], 2),
-                "Créditos (kWh)": fmt(creditsTrace[b], 2),
-              }))} />
+              <Table
+                rows={(Object.keys(BIM_LABELS) as BKey[]).map((b) => ({
+                  Bimestre: BIM_LABELS[b],
+                  "Consumo neto (kWh)": fmt(
+                    Math.max(cons[b] - genBim[b], 0),
+                    2
+                  ),
+                  "Factura con PV (MXN)": fmt(billsSolarBim[b], 2),
+                  "Créditos (kWh)": fmt(creditsTrace[b], 2),
+                }))}
+              />
             </Card>
             <Card title="Ahorro por bimestre">
-              <Table rows={(Object.keys(BIM_LABELS) as BKey[]).map((b) => ({
-                Bimestre: BIM_LABELS[b],
-                "Ahorro (MXN)": fmt(savingsBimMXN[b], 2),
-                "% Ahorro": `${fmt(savingsBimPct[b], 1)}%`,
-              }))} />
+              <Table
+                rows={(Object.keys(BIM_LABELS) as BKey[]).map((b) => ({
+                  Bimestre: BIM_LABELS[b],
+                  "Ahorro (MXN)": fmt(savingsBimMXN[b], 2),
+                  "% Ahorro": `${fmt(savingsBimPct[b], 1)}%`,
+                }))}
+              />
             </Card>
           </TwoCol>
 
           <Card title="Resumen financiero (ROI)">
             <Table rows={summary} />
             <div className="mt-4 overflow-auto">
-              <Table rows={roi.rows.map((r) => ({
-                Año: r.year, "Flujo (MXN)": fmt(r.cf, 2), "Flujo descontado (MXN)": fmt(r.pv, 2), "Acumulado (MXN)": fmt(r.cum, 2),
-              }))} />
+              <Table
+                rows={roi.rows.map((r) => ({
+                  Año: r.year,
+                  "Flujo (MXN)": fmt(r.cf, 2),
+                  "Flujo descontado (MXN)": fmt(r.pv, 2),
+                  "Acumulado (MXN)": fmt(r.cum, 2),
+                }))}
+              />
             </div>
             <p className="text-xs text-neutral-500 mt-3">
-              Nota: Modelo simplificado. Ajusta los parámetros a tu recibo real (bloques, unitarios y cargos).
+              Nota: Modelo simplificado. Ajusta los parámetros a tu recibo real
+              (bloques, unitarios y cargos).
             </p>
           </Card>
 
@@ -1048,51 +1555,76 @@ Para obtenerlo desde tu recibo, divide el costo total de cada concepto entre los
           <Card title="BOM Estructura (ANTAI Solar)">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <Num label="# Paneles" value={bomPanels} setValue={setBomPanels} step={1} />
-              <Num label="Ancho panel (mm)" value={bomWidthMM} setValue={setBomWidthMM} step={10} />
-              <Num label="Alto panel (mm)" value={bomHeightMM} setValue={setBomHeightMM} step={10} />
+              <Num
+                label="Ancho panel (mm)"
+                value={bomWidthMM}
+                setValue={setBomWidthMM}
+                step={10}
+              />
+              <Num
+                label="Alto panel (mm)"
+                value={bomHeightMM}
+                setValue={setBomHeightMM}
+                step={10}
+              />
               <div className="flex flex-col">
                 <label className="text-xs text-neutral-600 mb-1">Orientación</label>
                 <select
                   className="px-3 py-2 rounded-xl border bg-white"
                   value={bomOrientation}
-                  onChange={(e)=>setBomOrientation(e.target.value as "portrait"|"landscape")}
+                  onChange={(e) =>
+                    setBomOrientation(
+                      e.target.value as "portrait" | "landscape"
+                    )
+                  }
                 >
                   <option value="portrait">Portrait (vertical)</option>
                   <option value="landscape">Landscape (horizontal)</option>
                 </select>
               </div>
-              <Num label="Gap entre paneles (mm)" value={bomGapMM} setValue={setBomGapMM} step={5} />
+              <Num
+                label="Gap entre paneles (mm)"
+                value={bomGapMM}
+                setValue={setBomGapMM}
+                step={5}
+              />
             </div>
 
             <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-6">
               <div>
                 <h4 className="font-medium mb-2">Resumen de rieles</h4>
-                <Table rows={[
-                  { Componente: "Rail 4700mm", Cantidad: bom.total4700 },
-                  { Componente: "Rail 2400mm", Cantidad: bom.total2400 },
-                  { Componente: "Rail Splice (unión)", Cantidad: bom.totalSplices },
-                ]} />
+                <Table
+                  rows={[
+                    { Componente: "Rail 4700mm", Cantidad: bom.total4700 },
+                    { Componente: "Rail 2400mm", Cantidad: bom.total2400 },
+                    { Componente: "Rail Splice (unión)", Cantidad: bom.totalSplices },
+                  ]}
+                />
                 <p className="text-xs text-neutral-500 mt-2">
-                  *Optimizado por arreglo (1 fila con N paneles y 2 rieles). Se elige por riel la combinación
-                  4700/2400 que cubra la longitud total con el menor número de piezas y mínimo sobrante; los splices
-                  se calculan como (piezas−1)×2.
+                  *Optimizado por arreglo (1 fila con N paneles y 2 rieles). Se elige por
+                  riel la combinación 4700/2400 que cubra la longitud total con el menor
+                  número de piezas y mínimo sobrante; los splices se calculan como
+                  (piezas−1)×2.
                 </p>
               </div>
 
               <div>
                 <h4 className="font-medium mb-2">Abrazaderas, patas y puesta a tierra</h4>
-                <Table rows={[
-                  { Componente: "End Clamp", Cantidad: bom.endClamp },
-                  { Componente: "Mid Clamp", Cantidad: bom.midClamp },
-                  { Componente: "Adjustable front leg", Cantidad: bom.frontLeg },
-                  { Componente: "Adjustable rear leg", Cantidad: bom.rearLeg },
-                  { Componente: "Grounding Lug", Cantidad: bom.groundingLug },
-                  { Componente: "Earthing Clip", Cantidad: bom.earthingClip },
-                  { Componente: "Cable Clip", Cantidad: bom.cableClip },
-                ]} />
+                <Table
+                  rows={[
+                    { Componente: "End Clamp", Cantidad: bom.endClamp },
+                    { Componente: "Mid Clamp", Cantidad: bom.midClamp },
+                    { Componente: "Adjustable front leg", Cantidad: bom.frontLeg },
+                    { Componente: "Adjustable rear leg", Cantidad: bom.rearLeg },
+                    { Componente: "Grounding Lug", Cantidad: bom.groundingLug },
+                    { Componente: "Earthing Clip", Cantidad: bom.earthingClip },
+                    { Componente: "Cable Clip", Cantidad: bom.cableClip },
+                  ]}
+                />
                 <p className="text-xs text-neutral-500 mt-2">
-                  Reglas ANTAI aproximadas: EndClamp=4; MidClamp=2·N−2; Front/RearLeg=N (≤4) o N+1 (≥6);
-                  GroundingLug=1 (N≤4) o 2; EarthingClip=MidClamp; CableClip=N (si N≥6).
+                  Reglas ANTAI aproximadas: EndClamp=4; MidClamp=2·N−2; Front/RearLeg=N (≤4)
+                  o N+1 (≥6); GroundingLug=1 (N≤4) o 2; EarthingClip=MidClamp; CableClip=N
+                  (si N≥6).
                 </p>
               </div>
             </div>
@@ -1101,9 +1633,24 @@ Para obtenerlo desde tu recibo, divide el costo total de cada concepto entre los
             <div className="mt-6 border-t pt-4">
               <h4 className="font-medium mb-3">Espaciado entre filas (anti-sombra)</h4>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <Num label="Ángulo de inclinación (°)" value={tiltDeg} setValue={setTiltDeg} step={1} />
-                <Num label="Altitud solar de diseño (°)" value={designSunAltDeg} setValue={setDesignSunAltDeg} step={1} />
-                <Num label="Margen adicional (0–1)" value={spacingExtra} setValue={setSpacingExtra} step={0.01} />
+                <Num
+                  label="Ángulo de inclinación (°)"
+                  value={tiltDeg}
+                  setValue={setTiltDeg}
+                  step={1}
+                />
+                <Num
+                  label="Altitud solar de diseño (°)"
+                  value={designSunAltDeg}
+                  setValue={setDesignSunAltDeg}
+                  step={1}
+                />
+                <Num
+                  label="Margen adicional (0–1)"
+                  value={spacingExtra}
+                  setValue={setSpacingExtra}
+                  step={0.01}
+                />
               </div>
 
               <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
@@ -1113,14 +1660,17 @@ Para obtenerlo desde tu recibo, divide el costo total de cada concepto entre los
               </div>
 
               <p className="text-xs text-neutral-500 mt-2">
-                L es el largo del panel en la dirección de la pendiente ({bomOrientation === "portrait" ? "alto del panel" : "ancho del panel"}).
-                β es la altitud solar de diseño (p. ej. 20°–30° para invierno 9–15 h en GDL). El resultado incluye el margen indicado.
+                L es el largo del panel en la dirección de la pendiente (
+                {bomOrientation === "portrait" ? "alto del panel" : "ancho del panel"}
+                ). β es la altitud solar de diseño (p. ej. 20°–30° para invierno 9–15 h en
+                GDL). El resultado incluye el margen indicado.
               </p>
             </div>
 
             <p className="text-xs text-neutral-500 mt-4">
-              Nota: Este BOM es independiente del cotizador. Usa tus dimensiones y distribución por filas;
-              puede diferir de la tabla ANTAI 4–12 si la geometría varía.
+              Nota: Este BOM es independiente del cotizador. Usa tus dimensiones y
+              distribución por filas; puede diferir de la tabla ANTAI 4–12 si la geometría
+              varía.
             </p>
           </Card>
 
@@ -1128,23 +1678,45 @@ Para obtenerlo desde tu recibo, divide el costo total de cada concepto entre los
           <Card title="BOM Estructura (K2 CrossRail — Tilt Up / Multi-Row)">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <Num label="# Paneles" value={k2Panels} setValue={setK2Panels} step={1} />
-              <Num label="Ancho panel (mm)" value={k2WidthMM} setValue={setK2WidthMM} step={10} />
-              <Num label="Alto panel (mm)" value={k2HeightMM} setValue={setK2HeightMM} step={10} />
+              <Num
+                label="Ancho panel (mm)"
+                value={k2WidthMM}
+                setValue={setK2WidthMM}
+                step={10}
+              />
+              <Num
+                label="Alto panel (mm)"
+                value={k2HeightMM}
+                setValue={setK2HeightMM}
+                step={10}
+              />
 
               <div className="flex flex-col">
                 <label className="text-xs text-neutral-600 mb-1">Orientación</label>
                 <select
                   className="px-3 py-2 rounded-xl border bg-white"
                   value={k2Orientation}
-                  onChange={(e)=>setK2Orientation(e.target.value as "portrait"|"landscape")}
+                  onChange={(e) =>
+                    setK2Orientation(e.target.value as "portrait" | "landscape")
+                  }
                 >
                   <option value="portrait">Portrait (vertical)</option>
                   <option value="landscape">Landscape (horizontal)</option>
                 </select>
               </div>
 
-              <Num label="Gap entre paneles (mm)" value={k2GapMM} setValue={setK2GapMM} step={5} />
-              <Num label="Inclinación (°)" value={k2TiltDeg} setValue={setK2TiltDeg} step={1} />
+              <Num
+                label="Gap entre paneles (mm)"
+                value={k2GapMM}
+                setValue={setK2GapMM}
+                step={5}
+              />
+              <Num
+                label="Inclinación (°)"
+                value={k2TiltDeg}
+                setValue={setK2TiltDeg}
+                step={1}
+              />
 
               <div className="flex flex-col">
                 <label className="text-xs text-neutral-600 mb-1">Modo de filas</label>
@@ -1164,20 +1736,27 @@ Para obtenerlo desde tu recibo, divide el costo total de cada concepto entre los
                     type="checkbox"
                     className="h-4 w-4"
                     checked={k2AutoSpan}
-                    onChange={(e)=>setK2AutoSpan(e.target.checked)}
+                    onChange={(e) => setK2AutoSpan(e.target.checked)}
                   />
                   <span>Paso E-O automático = ancho módulo + gap</span>
                 </label>
+
                 {!k2AutoSpan && (
                   <div className="w-48">
-                    <Num label="Paso E-O manual (m)" value={k2SpanEwM} setValue={setK2SpanEwM} step={0.1} />
+                    <Num
+                      label="Paso E-O manual (m)"
+                      value={k2SpanEwM}
+                      setValue={setK2SpanEwM}
+                      step={0.1}
+                    />
                   </div>
                 )}
+
                 <div className="w-56">
                   <Num
                     label="Preset N-S (mm) (opcional)"
                     value={k2NsPresetMM ?? 0}
-                    setValue={(v)=>setK2NsPresetMM(v || undefined)}
+                    setValue={(v) => setK2NsPresetMM(v || undefined)}
                     step={10}
                   />
                 </div>
@@ -1186,47 +1765,63 @@ Para obtenerlo desde tu recibo, divide el costo total de cada concepto entre los
 
             {/* Geometría clave */}
             <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
-              <KV k="Módulo E-O + gap (mm)" v={fmt(k2Bom.modulePitchEOMM,0)} />
-              <KV k="Longitud de fila (mm)" v={fmt(k2Bom.rowLenMM,0)} />
+              <KV k="Módulo E-O + gap (mm)" v={fmt(k2Bom.modulePitchEOMM, 0)} />
+              <KV k="Longitud de fila (mm)" v={fmt(k2Bom.rowLenMM, 0)} />
               <KV k="Apoyos por fila (E-O)" v={String(k2Bom.supportsPerRow)} />
-              <KV k="Paso E-O objetivo (mm)" v={fmt(k2Bom.supportPitchEOMM,0)} />
-              <KV k="Paso E-O real (mm)" v={fmt(k2Bom.supportPitchActualMM,0)} />
-              <KV k="Separación N-S (c-a-c, mm)" v={fmt(k2Bom.nsRailSpacingC2CMM,0)} />
-              <KV k="Δ altura (trasera-delantera, mm)" v={fmt(k2Bom.riseMM,0)} />
-              <KV k="Pata delantera (ref)" v={`${fmt(k2Bom.frontLegMM,0)} mm`} />
-              <KV k="Pata trasera" v={`${fmt(k2Bom.rearLegMM,0)} mm`} />
+              <KV k="Paso E-O objetivo (mm)" v={fmt(k2Bom.supportPitchEOMM, 0)} />
+              <KV k="Paso E-O real (mm)" v={fmt(k2Bom.supportPitchActualMM, 0)} />
+              <KV k="Separación N-S (c-a-c, mm)" v={fmt(k2Bom.nsRailSpacingC2CMM, 0)} />
+              <KV k="Δ altura (trasera-delantera, mm)" v={fmt(k2Bom.riseMM, 0)} />
+              <KV k="Pata delantera (ref)" v={`${fmt(k2Bom.frontLegMM, 0)} mm`} />
+              <KV k="Pata trasera" v={`${fmt(k2Bom.rearLegMM, 0)} mm`} />
             </div>
 
             {/* Rieles y barras */}
             <TwoCol>
               <Card title="Rieles (longitud total)">
-                <Table rows={[
-                  { Concepto: "Rieles E–O (2 por fila)", "Longitud total (m)": (k2Bom.totalEORailsMM/1000).toFixed(2) },
-                  { Concepto: "Rieles N–S (2 por fila)", "Longitud total (m)": (k2Bom.totalNSRailsMM/1000).toFixed(2) },
-                  { Concepto: "Riel auxiliar patas",     "Longitud total (m)": (k2Bom.totalAuxLegRailsMM/1000).toFixed(2) },
-                  { Concepto: "Barras 4.8 m requeridas", Cantidad: k2Bom.bars48m },
-                  { Concepto: "Empalmes (splices) estimados", Cantidad: k2Bom.splices },
-                ]}/>
+                <Table
+                  rows={[
+                    {
+                      Concepto: "Rieles E–O (2 por fila)",
+                      "Longitud total (m)": (k2Bom.totalEORailsMM / 1000).toFixed(2),
+                    },
+                    {
+                      Concepto: "Rieles N–S (2 por fila)",
+                      "Longitud total (m)": (k2Bom.totalNSRailsMM / 1000).toFixed(2),
+                    },
+                    {
+                      Concepto: "Riel auxiliar patas",
+                      "Longitud total (m)":
+                        (k2Bom.totalAuxLegRailsMM / 1000).toFixed(2),
+                    },
+                    { Concepto: "Barras 4.8 m requeridas", Cantidad: k2Bom.bars48m },
+                    { Concepto: "Empalmes (splices) estimados", Cantidad: k2Bom.splices },
+                  ]}
+                />
                 <p className="text-xs text-neutral-500 mt-2">
-                  Aproximación: riel CrossRail E–O a lo largo de la fila (2 por fila); rieles N–S delanteros y
-                  traseros con separación c–a–c; barras comerciales de 4.8 m.
+                  Aproximación: riel CrossRail E–O a lo largo de la fila (2 por fila);
+                  rieles N–S delanteros y traseros con separación c–a–c; barras comerciales
+                  de 4.8 m.
                 </p>
               </Card>
 
               <Card title="Piezas (aprox)">
-                <Table rows={[
-                  { Pieza: "End Clamp", Cantidad: k2Bom.endClamp },
-                  { Pieza: "Mid Clamp", Cantidad: k2Bom.midClamp },
-                  { Pieza: "L-Foot", Cantidad: k2Bom.lFeet },
-                  { Pieza: "Tilt Connector", Cantidad: k2Bom.tiltConnectors },
-                  { Pieza: "CrossRail Climber", Cantidad: k2Bom.climbers },
-                  { Pieza: "Grounding Lug", Cantidad: k2Bom.groundingLug },
-                  { Pieza: "Earthing Clip", Cantidad: k2Bom.earthingClip },
-                  { Pieza: "Cable Clip", Cantidad: k2Bom.cableClip },
-                ]}/>
+                <Table
+                  rows={[
+                    { Pieza: "End Clamp", Cantidad: k2Bom.endClamp },
+                    { Pieza: "Mid Clamp", Cantidad: k2Bom.midClamp },
+                    { Pieza: "L-Foot", Cantidad: k2Bom.lFeet },
+                    { Pieza: "Tilt Connector", Cantidad: k2Bom.tiltConnectors },
+                    { Pieza: "CrossRail Climber", Cantidad: k2Bom.climbers },
+                    { Pieza: "Grounding Lug", Cantidad: k2Bom.groundingLug },
+                    { Pieza: "Earthing Clip", Cantidad: k2Bom.earthingClip },
+                    { Pieza: "Cable Clip", Cantidad: k2Bom.cableClip },
+                  ]}
+                />
                 <p className="text-xs text-neutral-500 mt-2">
-                  Reglas simples: EndClamp=4×filas; MidClamp=2·(N−1)×filas; L-Foot y TiltConnector=2 por apoyo;
-                  Climber=apoyos×rieles E-O por fila. Ajusta al catálogo K2 si tu kit varía.
+                  Reglas simples: EndClamp=4×filas; MidClamp=2·(N−1)×filas; L-Foot y
+                  TiltConnector=2 por apoyo; Climber=apoyos×rieles E-O por fila. Ajusta al
+                  catálogo K2 si tu kit varía.
                 </p>
               </Card>
             </TwoCol>
@@ -1234,15 +1829,18 @@ Para obtenerlo desde tu recibo, divide el costo total de cada concepto entre los
             {/* (Opcional) Posiciones de apoyo E-O */}
             <div className="mt-3">
               <h4 className="font-medium mb-2">Centros de apoyo E-O por fila (mm)</h4>
-              <Table rows={k2Bom.supportPositionsEOMM.map((p,i)=>({
-                "#": i+1, "Centro (mm)": fmt(p,0)
-              }))}/>
+              <Table
+                rows={k2Bom.supportPositionsEOMM.map((p, i) => ({
+                  "#": i + 1,
+                  "Centro (mm)": fmt(p, 0),
+                }))}
+              />
             </div>
 
             <p className="text-xs text-neutral-500 mt-4">
-              Nota: Este dimensionador K2 es independiente del cotizador y usa un modelo geométrico genérico.
-              Si tu proyecto requiere exactitud de ingeniería, cruza estos resultados con las tablas y guías K2
-              (por ejemplo, Tilt Up 1 Row y Multi-Row) para validar distancias “A/B/C/D” por tipo de módulo,
+              Nota: Este dimensionador K2 es independiente del cotizador y usa un modelo
+              geométrico genérico. Si tu proyecto requiere exactitud de ingeniería, cruza
+              estos resultados con las guías K2 para validar distancias por tipo de módulo,
               carga y cubierta.
             </p>
           </Card>
@@ -1250,14 +1848,19 @@ Para obtenerlo desde tu recibo, divide el costo total de cada concepto entre los
           {/* ========================= Cableado (NOM-001-SEDE-2012) ========================= */}
           <Card title="Cableado (NOM-001-SEDE-2012) — Strings, AWG y Caída de Tensión">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <Num label="fTemp (310-15)" value={fTemp} setValue={setFTemp} step={0.01}/>
-              <Num label="fBundling (310-15)" value={fBundling} setValue={setFBundling} step={0.01}/>
+              <Num label="fTemp (310-15)" value={fTemp} setValue={setFTemp} step={0.01} />
+              <Num
+                label="fBundling (310-15)"
+                value={fBundling}
+                setValue={setFBundling}
+                step={0.01}
+              />
               <div className="flex items-end gap-2">
                 <label className="text-xs text-neutral-600">Terminal (°C)</label>
                 <select
                   className="px-3 py-2 rounded-xl border bg-white text-sm"
                   value={termTemp}
-                  onChange={(e)=>setTermTemp(Number(e.target.value) as 75|90)}
+                  onChange={(e) => setTermTemp(Number(e.target.value) as 75 | 90)}
                 >
                   <option value={75}>75°C</option>
                   <option value={90}>90°C</option>
@@ -1267,32 +1870,68 @@ Para obtenerlo desde tu recibo, divide el costo total de cada concepto entre los
 
             <h4 className="font-medium mt-4 mb-2">String DC y límites del inversor</h4>
             <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
-              <Num label="Strings en paralelo" value={np} setValue={setNp} step={1}/>
-              <Num label="Isc módulo (A)" value={isc} setValue={setIsc} step={0.1}/>
-              <Num label="Voc módulo (V)" value={voc} setValue={setVoc} step={0.1}/>
-              <Num label="Vmp módulo (V)" value={vmp} setValue={setVmp} step={0.1}/>
-              <Num label="Módulos en serie" value={mods} setValue={setMods} step={1}/>
-              <Num label="βVmp (%/°C)" value={betaVmp} setValue={setBetaVmp} step={0.01}/>
-              <Num label="T° célula (caliente, °C)" value={tCellHot} setValue={setTCellHot} step={1}/>
-              <Num label="T° mínima amb (°C)" value={tMin} setValue={setTMin} step={1}/>
-              <Num label="Vdc máx inversor (V)" value={vdcMax} setValue={setVdcMax} step={10}/>
-              <Num label="Vmppt mín inversor (V)" value={vmpptMin} setValue={setVmpptMin} step={5}/>
+              <Num label="Strings en paralelo" value={np} setValue={setNp} step={1} />
+              <Num label="Isc módulo (A)" value={isc} setValue={setIsc} step={0.1} />
+              <Num label="Voc módulo (V)" value={voc} setValue={setVoc} step={0.1} />
+              <Num label="Vmp módulo (V)" value={vmp} setValue={setVmp} step={0.1} />
+              <Num label="Módulos en serie" value={mods} setValue={setMods} step={1} />
+              <Num
+                label="βVmp (%/°C)"
+                value={betaVmp}
+                setValue={setBetaVmp}
+                step={0.01}
+              />
+              <Num
+                label="T° célula (caliente, °C)"
+                value={tCellHot}
+                setValue={setTCellHot}
+                step={1}
+              />
+              <Num
+                label="T° mínima amb (°C)"
+                value={tMin}
+                setValue={setTMin}
+                step={1}
+              />
+              <Num
+                label="Vdc máx inversor (V)"
+                value={vdcMax}
+                setValue={setVdcMax}
+                step={10}
+              />
+              <Num
+                label="Vmppt mín inversor (V)"
+                value={vmpptMin}
+                setValue={setVmpptMin}
+                step={5}
+              />
+              <Num
+                label="Fusible máx. módulo (A) (opc)"
+                value={moduleMaxFuseA ?? 0}
+                setValue={(v) => setModuleMaxFuseA(v || undefined)}
+                step={1}
+              />
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm mt-2">
               <KV k="Σ Isc paralelo (A)" v={dc.iSum.toFixed(2)} />
               <KV k="Imax DC (A)" v={dc.iMax.toFixed(2)} />
-              <KV k="Conductor DC ≥ (A)" v={dc.minAmpacity.toFixed(1)} />
+              <KV k="Conductor DC ≥ (A)" v={dc.minAmp.toFixed(1)} />
               <KV k="OCPD DC recomendado (A)" v={dc.ocpd.toFixed(0)} />
               <KV k="Sugerido: Ns mín" v={String(dc.range.nsMin)} />
               <KV k="Sugerido: Ns máx" v={String(dc.range.nsMax)} />
               <KV k="Voc string (frío, V)" v={dc.vocStringFrioV.toFixed(0)} />
-              <KV k="Vmp string (aprox, V)" v={dc.vmpString.toFixed(0)} />
-              <KV k="AWG DC (cobre)" v={`#${dc.awgSel.awg} (permite ${dc.awgSel.allowableA.toFixed(0)} A)`} />
+              <KV k="Vmp string (caliente, V)" v={dc.vmpString.toFixed(0)} />
+              <KV
+                k="AWG DC (cobre)"
+                v={`#${dc.awgSel.awg} (permite ${dc.awgSel.allowableA.toFixed(
+                  0
+                )} A)`}
+              />
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mt-3">
-              <Num label="Longitud DC (ida, m)" value={lenDcM} setValue={setLenDcM} step={1}/>
+              <Num label="Longitud DC (ida, m)" value={lenDcM} setValue={setLenDcM} step={1} />
               <KV k="Vd DC (V)" v={dc.vd.Vdrop.toFixed(2)} />
               <KV k="Vd DC (%)" v={`${dc.vd.pct.toFixed(2)}%`} />
               <KV k="Límite ramal (3%)" v={dc.vdChk.exceeds ? "⚠️ Excede 3%" : "OK"} />
@@ -1300,36 +1939,56 @@ Para obtenerlo desde tu recibo, divide el costo total de cada concepto entre los
 
             <h4 className="font-medium mt-4 mb-2">AC — Inversor central (1Φ)</h4>
             <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-              <Num label="I salida inv (A)" value={iInv} setValue={setIInv} step={0.5}/>
-              <Num label="Longitud AC (ida, m)" value={lenAcM} setValue={setLenAcM} step={1}/>
-              <Num label="V AC 1Φ (V)" value={vac1p} setValue={setVac1p} step={10}/>
-              <Num label="PF" value={pf} setValue={setPf} step={0.01}/>
+              <Num label="I salida inv (A)" value={iInv} setValue={setIInv} step={0.5} />
+              <Num label="Longitud AC (ida, m)" value={lenAcM} setValue={setLenAcM} step={1} />
+              <Num label="V AC 1Φ (V)" value={vac1p} setValue={setVac1p} step={10} />
+              <Num label="PF" value={pf} setValue={setPf} step={0.01} />
             </div>
             <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm mt-2">
               <KV k="Conductor AC ≥ (A)" v={acCentral.minAmpacity.toFixed(1)} />
               <KV k="OCPD AC recomendado (A)" v={acCentral.ocpd.toFixed(0)} />
-              <KV k="AWG AC (cobre)" v={`#${acCentral.awgSel.awg} (${acCentral.awgSel.allowableA.toFixed(0)} A)`} />
-              <KV k="Vd AC 1Φ (%)" v={`${acCentral.vd.pct.toFixed(2)}% ${acCentral.vdChk.exceeds ? "⚠️>5%" : "OK"}`} />
+              <KV
+                k="AWG AC (cobre)"
+                v={`#${acCentral.awgSel.awg} (${acCentral.awgSel.allowableA.toFixed(
+                  0
+                )} A)`}
+              />
+              <KV
+                k="Vd AC 1Φ (%)"
+                v={`${acCentral.vd.pct.toFixed(2)}% ${
+                  acCentral.vdChk.exceeds ? "⚠️>5%" : "OK"
+                }`}
+              />
             </div>
 
             <h4 className="font-medium mt-4 mb-2">AC — Microinversores (ramal 1Φ)</h4>
             <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-              <Num label="# micros" value={nMic} setValue={setNMic} step={1}/>
-              <Num label="I por micro (A)" value={iMic} setValue={setIMic} step={0.1}/>
-              <Num label="Longitud AC (ida, m)" value={lenAcM} setValue={setLenAcM} step={1}/>
-              <Num label="V AC 1Φ (V)" value={vac1p} setValue={setVac1p} step={10}/>
+              <Num label="# micros" value={nMic} setValue={setNMic} step={1} />
+              <Num label="I por micro (A)" value={iMic} setValue={setIMic} step={0.1} />
+              <Num label="Longitud AC (ida, m)" value={lenAcM} setValue={setLenAcM} step={1} />
+              <Num label="V AC 1Φ (V)" value={vac1p} setValue={setVac1p} step={10} />
             </div>
             <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm mt-2">
               <KV k="Conductor ramal ≥ (A)" v={acMicro.minAmpacity.toFixed(1)} />
               <KV k="OCPD ramal (A)" v={acMicro.ocpd.toFixed(0)} />
-              <KV k="AWG ramal (cobre)" v={`#${acMicro.awgSel.awg} (${acMicro.awgSel.allowableA.toFixed(0)} A)`} />
-              <KV k="Vd ramal 1Φ (%)" v={`${acMicro.vd.pct.toFixed(2)}% ${acMicro.vdChk.exceeds ? "⚠️>3%" : "OK"}`} />
+              <KV
+                k="AWG ramal (cobre)"
+                v={`#${acMicro.awgSel.awg} (${acMicro.awgSel.allowableA.toFixed(
+                  0
+                )} A)`}
+              />
+              <KV
+                k="Vd ramal 1Φ (%)"
+                v={`${acMicro.vd.pct.toFixed(2)}% ${
+                  acMicro.vdChk.exceeds ? "⚠️>3%" : "OK"
+                }`}
+              />
             </div>
 
             <p className="text-xs text-neutral-500 mt-3">
-              Notas: 690-8 (125% corrientes continuas), 690-7 (Voc en frío), 310-15 (derates).
-              Objetivos de Vd: 3% ramales y 5% alimentadores. AWG sugerido: cobre THWN-2 90°C
-              con derates y límite de terminal 75/90°C según equipo.
+              Notas: 690-8 (125% corrientes continuas), 690-7 (Voc en frío), 310-15
+              (derates). Objetivos de Vd: 3% ramales y 5% alimentadores. AWG sugerido:
+              cobre THWN-2 90°C con derates y límite de terminal 75/90°C según equipo.
             </p>
           </Card>
         </section>
@@ -1342,7 +2001,13 @@ Para obtenerlo desde tu recibo, divide el costo total de cada concepto entre los
    Mini componentes UI (definidos fuera de Page)
    ===================================================================== */
 
-function Card({ title, children }: { title: string; children: React.ReactNode }) {
+function Card({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
     <section className="bg-white rounded-2xl shadow-sm border p-4">
       <h2 className="text-lg font-medium mb-3">{title}</h2>
@@ -1373,7 +2038,9 @@ function Table({ rows }: { rows: Row[] }) {
         <thead>
           <tr className="text-left border-b bg-neutral-50">
             {cols.map((c) => (
-              <th key={c} className="px-2 py-2 whitespace-nowrap">{c}</th>
+              <th key={c} className="px-2 py-2 whitespace-nowrap">
+                {c}
+              </th>
             ))}
           </tr>
         </thead>
@@ -1382,7 +2049,7 @@ function Table({ rows }: { rows: Row[] }) {
             <tr key={i} className="border-b last:border-0">
               {cols.map((c) => (
                 <td key={c} className="px-2 py-2 whitespace-nowrap">
-                  {r[c] as React.ReactNode ?? ""}
+                  {((r[c] as unknown) as React.ReactNode) ?? ""}
                 </td>
               ))}
             </tr>
@@ -1394,9 +2061,15 @@ function Table({ rows }: { rows: Row[] }) {
 }
 
 function Num({
-  label, value, setValue, step = 1,
+  label,
+  value,
+  setValue,
+  step = 1,
 }: {
-  label: string; value: number; setValue: (v: number) => void; step?: number;
+  label: string;
+  value: number;
+  setValue: (v: number) => void;
+  step?: number;
 }) {
   return (
     <div className="flex flex-col">
