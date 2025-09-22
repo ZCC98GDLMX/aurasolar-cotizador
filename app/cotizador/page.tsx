@@ -15,12 +15,10 @@ import { bomAntaiForPanelsSingleRow, rowSpacingLEtoLEmm } from "../../lib/antai"
 import { k2Compute, type K2RowMode } from "../../lib/k2";
 
 // cabling (en /lib a nivel raíz)
-import type { CopperAwg } from "../../lib/cabling";
 import {
   pvDcMaxCurrentA,
   requiredConductorAmpacityA,
-  ocpdRecommendedA, // (se usa para AC)
-  ocpdRecommendedRoundedA, // (nuevo) redondeo comercial para DC
+  ocpdRecommendedRoundedA, // redondeo comercial para DC
   inverterAcSizing,
   microBranchSizing,
   checkStringVocCold,
@@ -28,7 +26,6 @@ import {
   selectCopperAwg,
   voltageDropDCDC,
   voltageDropAC1P,
-  voltageDropAC3P,
   vdExceeds,
 } from "../../lib/cabling";
 
@@ -501,7 +498,6 @@ function roiCashflows(
 // ----------------------------
 // UI helpers
 // ----------------------------
-type Row = Record<string, string | number | React.ReactNode>;
 
 function downloadCSV(filename: string, tables: Record<string, Row[]>) {
   const parts: string[] = [];
@@ -639,9 +635,6 @@ export default function Page() {
   const [betaVmp, setBetaVmp] = useState(-0.35); // %/°C (negativo)
   const [tCellHot, setTCellHot] = useState(65); // °C
   const [tMin, setTMin] = useState(5); // °C
-  const [moduleMaxFuseA, setModuleMaxFuseA] = useState<number | undefined>(
-    undefined
-  ); // opcional
 
   // Inversor DC - límites
   const [vdcMax, setVdcMax] = useState(600);
@@ -716,7 +709,6 @@ export default function Page() {
     setBetaVmp(-0.35);
     setTCellHot(65);
     setTMin(5);
-    setModuleMaxFuseA(undefined);
     setVdcMax(600);
     setVmpptMin(200);
     setIInv(16);
@@ -1002,8 +994,8 @@ export default function Page() {
     });
     const vdChk = vdExceeds(vd.pct, "ramal"); // 3%
 
-    // 5) OCPD DC redondeado a tamaño comercial; limitar por fusible máx módulo si se da
-    const ocpd = ocpdRecommendedRoundedA(iMax, moduleMaxFuseA);
+    // 5) OCPD DC redondeado a tamaño comercial (sin fusible máx. de módulo)
+const ocpd = ocpdRecommendedRoundedA(iMax);
 
     return {
       iSum,
@@ -1030,7 +1022,6 @@ export default function Page() {
     vmpptMin,
     lenDcM,
     derate,
-    moduleMaxFuseA,
   ]);
 
   const acCentral = useMemo(() => {
@@ -1905,12 +1896,6 @@ Para obtenerlo desde tu recibo, divide el costo total de cada concepto entre los
                 setValue={setVmpptMin}
                 step={5}
               />
-              <Num
-                label="Fusible máx. módulo (A) (opc)"
-                value={moduleMaxFuseA ?? 0}
-                setValue={(v) => setModuleMaxFuseA(v || undefined)}
-                step={1}
-              />
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm mt-2">
@@ -2028,6 +2013,8 @@ function KV({ k, v }: { k: string; v: React.ReactNode }) {
     </div>
   );
 }
+
+type Row = Record<string, string | number | React.ReactNode>;
 
 function Table({ rows }: { rows: Row[] }) {
   // unión de claves de todos los rows (en el orden de aparición)
